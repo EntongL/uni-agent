@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
@@ -10,6 +11,18 @@ from .registry import register_sandbox
 
 if TYPE_CHECKING:
     from .base import SandboxConfig
+
+
+logger = logging.getLogger(__name__)
+
+
+def _positive_timeout(name: str, value: float | None) -> float | None:
+    if value is None:
+        return None
+    value = float(value)
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive number of seconds, got {value!r}")
+    return value
 
 
 @register_sandbox("docker")
@@ -26,6 +39,8 @@ class DockerSandbox(Sandbox):
         verify_container_image: bool = True,
         run_args: list[str] | None = None,
         pull_policy: str = "missing",
+        pull_timeout: float | None = None,
+        start_timeout: float | None = None,
         entrypoint: str = "sleep",
         command: list[str] | None = None,
     ) -> None:
@@ -58,6 +73,8 @@ class DockerSandbox(Sandbox):
         if pull_policy not in {"always", "missing", "never"}:
             raise ValueError("pull_policy must be one of: 'always', 'missing', 'never'")
         self.pull_policy = pull_policy
+        self.pull_timeout = _positive_timeout("pull_timeout", pull_timeout)
+        self.start_timeout = _positive_timeout("start_timeout", start_timeout)
         self.entrypoint = entrypoint
         self.command = list(command or ["infinity"])
         self._container_name: str | None = None
@@ -92,6 +109,21 @@ class DockerSandbox(Sandbox):
             stdout=_to_str(stdout),
             stderr=_to_str(stderr),
         )
+
+    async def _has_image(self) -> bool:
+        return (await self._run_docker("image", "inspect", self.image)).exit_code == 0
+
+    async def _pull_image(self) -> None:
+        """Fetch the image up front so the pull is bounded by ``pull_timeout``, not by ``docker run``."""
+        try:
+            pulled = await self._run_docker("pull", self.image, timeout=self.pull_timeout)
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(
+                f"Pulling Docker image {self.image!r} exceeded pull_timeout={self.pull_timeout:g}s"
+            ) from exc
+        if pulled.exit_code != 0:
+            detail = pulled.stderr.strip() or pulled.stdout.strip()
+            raise RuntimeError(f"Failed to pull Docker image {self.image!r}: {detail}")
 
     async def start(self) -> None:
         if self._container_name is not None:
@@ -144,36 +176,53 @@ class DockerSandbox(Sandbox):
                 detail = inspected.stderr.strip() or inspected.stdout.strip()
                 raise RuntimeError(f"Docker image {self.image!r} is not available locally: {detail}")
 
+        # A separate `docker pull` to time-bound the pull on its own
+        pull_policy = self.pull_policy
+        if self.pull_timeout is not None and pull_policy != "never":
+            if pull_policy == "always" or not await self._has_image():
+                await self._pull_image()
+            pull_policy = "never"
+
         name = self.container_name or f"uni-agent-{uuid.uuid4().hex[:12]}"
-        args = self._build_run_args(name, include_pull=True)
-        started = await self._run_docker(*args)
+        args = self._build_run_args(name, pull_policy=pull_policy, include_pull=True)
+        started = await self._run_start_command(name, args)
         if started.exit_code != 0 and self._is_legacy_pull_error(started):
             # Docker added `docker run --pull` in 20.10. Older daemons/CLIs
             # reject the flag before creating a container. Fall back to the
             # legacy command shape: `missing` is the old default behavior,
-            # `never` was already checked with image inspect above, and
+            # `never` was already checked (or explicitly pulled) above, and
             # `always` is preserved by pulling explicitly first.
             logger.info(
                 "Docker does not support --pull; retrying sandbox %s with legacy run syntax",
                 name,
             )
-            if self.pull_policy == "always":
-                pulled = await self._run_docker("pull", self.image)
-                if pulled.exit_code != 0:
-                    detail = pulled.stderr.strip() or pulled.stdout.strip()
-                    raise RuntimeError(f"Failed to pull Docker image {self.image!r}: {detail}")
-            args = self._build_run_args(name, include_pull=False)
-            started = await self._run_docker(*args)
+            if pull_policy == "always":
+                await self._pull_image()
+            args = self._build_run_args(name, pull_policy=pull_policy, include_pull=False)
+            started = await self._run_start_command(name, args)
         if started.exit_code != 0:
             detail = started.stderr.strip() or started.stdout.strip()
             raise RuntimeError(f"Failed to start Docker sandbox from {self.image!r}: {detail}")
         self._container_name = name
 
-    def _build_run_args(self, name: str, *, include_pull: bool) -> list[str]:
+    async def _run_start_command(self, name: str, args: list[str]) -> ExecResult:
+        """Run ``docker run`` and clean up if the command times out mid-create."""
+        try:
+            return await self._run_docker(*args, timeout=self.start_timeout)
+        except asyncio.TimeoutError as exc:
+            # A timed-out `docker run` may have created the container; remove it
+            # so a retry with the same name cannot collide.
+            await self._run_docker("rm", "-f", name, timeout=30.0)
+            timeout_label = "unset" if self.start_timeout is None else f"{self.start_timeout:g}"
+            raise TimeoutError(
+                f"Starting Docker sandbox from {self.image!r} exceeded start_timeout={timeout_label}s"
+            ) from exc
+
+    def _build_run_args(self, name: str, *, pull_policy: str, include_pull: bool) -> list[str]:
         """Build ``docker run`` arguments for both modern and legacy CLIs."""
         args = ["run", "--rm", "-d", "--name", name]
         if include_pull:
-            args.extend(["--pull", self.pull_policy])
+            args.extend(["--pull", pull_policy])
         if self.entrypoint:
             args.extend(["--entrypoint", self.entrypoint])
         args.extend(self.run_args)
