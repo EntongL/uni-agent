@@ -1,0 +1,16 @@
+working_dir: ./
+excludes: ["/.git/"]
+
+pip:
+  packages:
+    - "modal"
+    - "swebench==4.1.0"
+
+env_vars:
+  PYTHONPATH: "verl"
+  PYTHONNOUSERSITE: "1"
+  TORCH_NCCL_AVOID_RECORD_STREAMS: "1"
+  CUDA_DEVICE_MAX_CONNECTIONS: "1"
+
+  MODAL_TOKEN_ID: "<modal-token-id>"
+  MODAL_TOKEN_SECRET: "<modal-token-secret>"

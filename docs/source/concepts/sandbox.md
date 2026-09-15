@@ -60,6 +60,16 @@ async with sandbox:
 
 Entering the context starts the backend with retry, timeout, and global startup-concurrency controls. Exiting the context calls `stop()` even when the episode raises.
 
+For Docker, `sandbox_kwargs.container_ref` changes lifecycle ownership rather than the data
+plane. The value may be an existing container name or ID. Entering validates that the
+container exists, is running, and (by default) uses the configured image; exiting detaches
+without stopping or removing it. Without `container_ref`, Docker keeps its default managed,
+ephemeral lifecycle.
+
+External containers preserve all mutations across contexts. The Task must reset its code
+workspace and other episode-owned state when independent rollouts require identical initial
+conditions. Do not attach concurrent episodes to the same mutable container.
+
 The shared lifecycle uses:
 
 - `SANDBOX_STARTUP_TIMEOUT`: startup timeout, 600 seconds by default.

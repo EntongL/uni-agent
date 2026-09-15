@@ -62,6 +62,36 @@ Uni-Agent supports multiple sandbox backends. Choose the backend that matches yo
     `entrypoint` and `command` in `sandbox_kwargs`. Run `docker login <registry>` first when
     pulling from a private registry.
 
+    To attach to a container that you manage outside Uni-Agent, pass its Docker name or ID
+    as `container_ref`:
+
+    ```bash
+    docker run -d --name uni-agent-rl-sandbox --entrypoint sleep python:3.12 infinity
+    ```
+
+    ```python
+    config = SandboxConfig(
+        provider="docker",
+        image="python:3.12",
+        sandbox_kwargs={
+            "container_ref": "uni-agent-rl-sandbox",
+            "verify_container_image": True,
+        },
+    )
+    ```
+
+    The container must already be running. Uni-Agent validates it on entry and uses
+    `docker exec` and `docker cp` as usual, but does not start, stop, or remove it. When
+    `image` is set and `verify_container_image` is true (the default), the provider compares
+    image IDs and rejects a stale or mismatched container. Set `image=None` or disable the
+    check only when the external container image is intentionally managed separately.
+
+    `container_ref` cannot be combined with container-creation options such as
+    `container_name`, `run_args`, `pull_policy`, `entrypoint`, or `command`. A reused
+    container also retains filesystem changes and background processes between sandbox
+    contexts. Coding tasks should restore their workspace to a clean baseline before every
+    episode, and a single container must not be shared by concurrent episodes.
+
 === "veFaaS"
 
     **Remote cloud service.** [veFaaS](https://www.volcengine.com/product/vefaas) provides elastic, isolated sandboxes on Volcengine.

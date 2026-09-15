@@ -1,7 +1,7 @@
 - name: swe_bench
   run_oracle_solution: true
   sandbox:
-    provider: modal
+    provider: local
     runtime_timeout: 3600
 
 - name: swe_bench_multilingual

@@ -96,6 +96,102 @@ def test_swe_preprocess_emits_source_prompt_without_nested_rendered_prompt(monke
         assert task_config["metadata"]["language"] == "C"
 
 
+def _write_swe_rebench_parquet(path):
+    import json
+
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+
+    install_config = pa.struct(
+        [
+            pa.field("install", pa.string()),
+            pa.field("log_parser", pa.string()),
+            pa.field("test_cmd", pa.string()),
+        ]
+    )
+    table = pa.table(
+        {
+            "instance_id": ["org__repo-2"],
+            "repo": ["org/repo"],
+            "base_commit": ["base"],
+            "patch": ["SECRET GOLD PATCH"],
+            "test_patch": ["SECRET TEST PATCH"],
+            "problem_statement": ["Canonical source problem"],
+            "FAIL_TO_PASS": [["fail"]],
+            "FAIL_TO_FAIL": [[]],
+            "PASS_TO_PASS": [["pass"]],
+            "PASS_TO_FAIL": [[]],
+            "install_config": [
+                {"install": "install", "log_parser": "parser", "test_cmd": "test"},
+            ],
+        },
+        schema=pa.schema(
+            [
+                pa.field("instance_id", pa.string()),
+                pa.field("repo", pa.string()),
+                pa.field("base_commit", pa.string()),
+                pa.field("patch", pa.string()),
+                pa.field("test_patch", pa.string()),
+                pa.field("problem_statement", pa.string()),
+                pa.field("FAIL_TO_PASS", pa.list_(pa.string())),
+                pa.field("FAIL_TO_FAIL", pa.list_(pa.string())),
+                pa.field("PASS_TO_PASS", pa.list_(pa.string())),
+                pa.field("PASS_TO_FAIL", pa.list_(pa.string())),
+                pa.field("install_config", install_config),
+            ]
+        ),
+    )
+    # Mimic Hub parquet metadata that older/newer `datasets` cannot deserialize.
+    table = table.replace_schema_metadata(
+        {
+            b"huggingface": json.dumps(
+                {
+                    "info": {
+                        "features": {
+                            "install_config": {"_type": "ThisTypeDoesNotExist"},
+                        }
+                    }
+                }
+            ).encode("utf-8")
+        }
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(table, path)
+
+
+@pytest.mark.cpu
+@pytest.mark.level0
+def test_swe_rebench_local_parquet_files(tmp_path):
+    data_dir = tmp_path / "swe_rebench"
+    shard_dir = data_dir / "data"
+    shard_dir.mkdir(parents=True)
+    shard = shard_dir / "filtered-00000-of-00001.parquet"
+    shard.write_bytes(b"parquet")
+
+    files = swe_rebench_preprocess.local_parquet_files(str(data_dir))
+    assert files == [str(shard)]
+
+
+@pytest.mark.cpu
+@pytest.mark.level0
+def test_swe_rebench_loads_local_parquet_without_hub_metadata(tmp_path, monkeypatch):
+    data_dir = tmp_path / "swe_rebench"
+    shard = data_dir / "data" / "filtered-00000-of-00001.parquet"
+    _write_swe_rebench_parquet(shard)
+
+    def fail_load_dataset(*args, **kwargs):
+        raise AssertionError(f"load_dataset should not be called for local parquet: {args} {kwargs}")
+
+    monkeypatch.setattr(swe_rebench_preprocess, "load_dataset", fail_load_dataset)
+
+    output = swe_rebench_preprocess.build_swe_rebench(dataset_dir=str(data_dir))[0]
+    task_config = output["extra_info"]["tools_kwargs"]["task"]
+    assert output["prompt"] == [{"role": "user", "content": "Canonical source problem"}]
+    assert task_config["metadata"]["install"] == "install"
+    assert task_config["metadata"]["log_parser"] == "parser"
+    assert task_config["metadata"]["test_cmd"] == "test"
+
+
 @pytest.mark.cpu
 @pytest.mark.level0
 @pytest.mark.parametrize(
