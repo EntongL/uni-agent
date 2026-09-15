@@ -18,6 +18,14 @@ python -m uni_agent.tasks.swe_bench.preprocess --local-save-dir /path/to/swe_age
 
 > The command writes `/path/to/swe_agent/swe_bench_verified.parquet`. It downloads `princeton-nlp/SWE-bench_Verified` from the Hugging Face Hub; if the Hub is unreachable from your network, set `HF_ENDPOINT` to an alternate mirror (e.g. `HF_ENDPOINT=https://hf-mirror.com`) and rerun.
 
+If the dataset has already been downloaded to a local ModelScope or Hugging Face snapshot, pass its directory to avoid downloading it again:
+
+```bash
+python -m uni_agent.tasks.swe_bench.preprocess \
+    --dataset-dir /path/to/SWE-bench_Verified \
+    --local-save-dir /path/to/swe_agent
+```
+
 ## Task Configuration
 
 The `react` agent drives a ReAct (reason + act) loop: the model reasons, calls a host-side tool, and repeats until it submits. Use the ready-made config at `examples/quickstart/agent_aware_router/task_config_react.yaml`:

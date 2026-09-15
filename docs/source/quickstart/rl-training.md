@@ -40,6 +40,8 @@ python3 -m uni_agent.tasks.swe_bench.preprocess --local-save-dir ~/data/uni_agen
 
 The command writes: `~/data/uni_agent/swe_bench_verified.parquet`
 
+If SWE-Bench Verified is already downloaded locally, add `--dataset-dir /path/to/SWE-bench_Verified` to preprocess the local snapshot without accessing the Hugging Face Hub.
+
 The processed rows remain independent of the runtime Sandbox provider and Agent protocol. Each row contains one dataset/source user message with the problem statement, task metadata, a canonical image reference, and a per-sample Task Config. The selected ReAct or Claude Code recipe owns the complete `prompt_template` and formats its Task messages from metadata at runtime.
 
 !!! warning "Prompt length filtering"
