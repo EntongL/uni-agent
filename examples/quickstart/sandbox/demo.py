@@ -29,6 +29,8 @@ def _indent(text, prefix: str = "    | ") -> str:
 def build_sandbox_config() -> SandboxConfig:
     provider = os.getenv("SANDBOX_PROVIDER", "modal")
     image = os.getenv("IMAGE")
+    container_ref = os.getenv("SANDBOX_CONTAINER_REF")
+    sandbox_kwargs = {"container_ref": container_ref} if container_ref else {}
 
     if provider == "local":
         if image is not None:
@@ -41,6 +43,7 @@ def build_sandbox_config() -> SandboxConfig:
         provider=provider,
         image=image,
         runtime_timeout=3600,
+        sandbox_kwargs=sandbox_kwargs,
     )
 
 
