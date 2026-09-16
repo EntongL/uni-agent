@@ -13,7 +13,7 @@ exp_name=${EXP_NAME:-"$(date +%Y%m%d%H%M%S)_exp"}
 
 RAY_DATA_HOME=${RAY_DATA_HOME:-"${HOME}/verl"}
 MODEL_PATH=${MODEL_PATH:-"${RAY_DATA_HOME}/models/Qwen3-0.6B"}
-RUNTIME_ENV=${RUNTIME_ENV:-"${RAY_DATA_HOME}/data/uni_agent/runtime_env.yaml"}
+RUNTIME_ENV=${RUNTIME_ENV:-"examples/quickstart/training/runtime_env_npu_smoke.yaml"}
 TASK_CONFIG=${TASK_CONFIG:-"examples/quickstart/training/task_config_react_npu_smoke.yaml"}
 
 # If TRAIN_FILE / TEST_FILE are not supplied, make tiny files from the normal
@@ -21,8 +21,8 @@ TASK_CONFIG=${TASK_CONFIG:-"examples/quickstart/training/task_config_react_npu_s
 TRAIN_FILE=${TRAIN_FILE:-"${RAY_DATA_HOME}/data/uni_agent/npu_smoke_train.parquet"}
 TEST_FILE=${TEST_FILE:-"${RAY_DATA_HOME}/data/uni_agent/npu_smoke_test.parquet"}
 SOURCE_TRAIN_FILE=${SOURCE_TRAIN_FILE:-"${RAY_DATA_HOME}/data/uni_agent/swe_rebench_filtered_1150.parquet"}
-SOURCE_TEST_FILE=${SOURCE_TEST_FILE:-"${RAY_DATA_HOME}/data/uni_agent/swe_bench_verified.parquet"}
-SMOKE_TRAIN_ROWS=${SMOKE_TRAIN_ROWS:-2}
+SOURCE_TEST_FILE=${SOURCE_TEST_FILE:-"${SOURCE_TRAIN_FILE}"}
+SMOKE_TRAIN_ROWS=${SMOKE_TRAIN_ROWS:-1}
 SMOKE_TEST_ROWS=${SMOKE_TEST_ROWS:-1}
 
 CKPTS_DIR=${CKPTS_DIR:-"${RAY_DATA_HOME}/ckpts/${project_name}/${exp_name}"}
@@ -68,7 +68,7 @@ attn_impl=${ATTN_IMPL:-flash_attention_2}
 rollout_mem_util=${ROLLOUT_GPU_MEM_UTIL:-0.60}
 
 # Small colocate_async batch. This still performs rollout, reward, and update.
-train_prompt_bsz=${TRAIN_PROMPT_BSZ:-2}
+train_prompt_bsz=${TRAIN_PROMPT_BSZ:-1}
 n_resp_per_prompt=${N_RESP_PER_PROMPT:-2}
 train_prompt_mini_bsz=${PPO_MINI_BATCH_SIZE:-1}
 num_warmup_batches=${NUM_WARMUP_BATCHES:-1}

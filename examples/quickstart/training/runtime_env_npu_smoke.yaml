@@ -1,0 +1,21 @@
+# Run this command from the uni-agent repository root. Ray uploads this
+# working directory to the job workers, including the local uni_agent package.
+working_dir: ./
+excludes:
+  - "/.git/"
+
+# The reward implementation imports swebench on the Ray worker. Remove this
+# block if swebench==4.1.0 is already installed in the NPU/Ray image and the
+# worker has no package index access.
+pip:
+  packages:
+    - "swebench==4.1.0"
+
+env_vars:
+  # The repository's verl checkout is expected under the Ray working dir, or
+  # verl must already be importable in the NPU image.
+  PYTHONPATH: "verl"
+  PYTHONNOUSERSITE: "1"
+  TORCH_NCCL_AVOID_RECORD_STREAMS: "1"
+  CUDA_DEVICE_MAX_CONNECTIONS: "1"
+  VLLM_DISABLE_COMPILE_CACHE: "1"

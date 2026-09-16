@@ -2,8 +2,11 @@
 # The dataset row still supplies the actual task metadata and sandbox image.
 - name: swe_rebench
   sandbox:
-    provider: vefaas
+    provider: docker
     runtime_timeout: 7200
+    sandbox_kwargs:
+      container_ref: uni-agent-resident
+      verify_container_image: false
   agent:
     name: react
     max_steps: 4
@@ -26,8 +29,11 @@
 
 - name: swe_bench
   sandbox:
-    provider: vefaas
+    provider: docker
     runtime_timeout: 7200
+    sandbox_kwargs:
+      container_ref: uni-agent-resident
+      verify_container_image: false
   agent:
     name: react
     max_steps: 4
