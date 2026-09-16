@@ -6,7 +6,20 @@ set -xeuo pipefail
 # NPU recipe, but removes MoE-only settings and uses tiny sequence/batch sizes.
 
 NNODES=${NNODES:-1}
-NGPUS_PER_NODE=${NGPUS_PER_NODE:-1}
+NGPUS_PER_NODE=${NGPUS_PER_NODE:-16}
+START_RAY=${START_RAY:-True}
+RAY_GCS_ADDRESS=${RAY_GCS_ADDRESS:-"127.0.0.1:6379"}
+RAY_ADDRESS=${RAY_ADDRESS:-"http://127.0.0.1:8265"}
+
+# Make all local Ascend devices visible by default. Override this when running
+# on a subset of cards, for example ASCEND_RT_VISIBLE_DEVICES=0,1,2,3.
+if [[ -z "${ASCEND_RT_VISIBLE_DEVICES:-}" ]]; then
+    visible_npus=""
+    for ((npu_index = 0; npu_index < NGPUS_PER_NODE; npu_index++)); do
+        visible_npus+="${visible_npus:+,}${npu_index}"
+    done
+    export ASCEND_RT_VISIBLE_DEVICES="${visible_npus}"
+fi
 
 project_name=${PROJECT_NAME:-"Uni-Agent-Qwen3-0.6B-veomni-npu-smoke"}
 exp_name=${EXP_NAME:-"$(date +%Y%m%d%H%M%S)_exp"}
@@ -88,7 +101,20 @@ if [[ ! -f "${TEST_FILE}" ]]; then
         --rows "${SMOKE_TEST_ROWS}"
 fi
 
-ray job submit --no-wait --runtime-env "${RUNTIME_ENV}" \
+if [[ "${START_RAY}" == "True" ]]; then
+    if ! ray status --address="${RAY_GCS_ADDRESS}" >/dev/null 2>&1; then
+        total_npus=$((NNODES * NGPUS_PER_NODE))
+        ray start --head \
+            --port=6379 \
+            --dashboard-host=0.0.0.0 \
+            --resources="{\"NPU\": ${total_npus}}" \
+            --disable-usage-stats
+    else
+        echo "Ray cluster already running at ${RAY_GCS_ADDRESS}."
+    fi
+fi
+
+ray job submit --address "${RAY_ADDRESS}" --no-wait --runtime-env "${RUNTIME_ENV}" \
     -- env RAY_OVERRIDE_JOB_RUNTIME_ENV=1 \
     python3 -m verl.trainer.main_ppo \
     trainer.use_v1=True \
