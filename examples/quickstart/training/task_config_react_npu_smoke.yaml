@@ -1,0 +1,49 @@
+# Small ReAct task budget for validating the NPU RL data path.
+# The dataset row still supplies the actual task metadata and sandbox image.
+- name: swe_rebench
+  sandbox:
+    provider: vefaas
+    runtime_timeout: 7200
+  agent:
+    name: react
+    max_steps: 4
+    tools:
+      - name: str_replace_editor
+      - name: stateful_shell
+        command_timeout: 30
+        env_vars:
+          PAGER: "cat"
+          GIT_PAGER: "cat"
+          MANPAGER: "cat"
+          TQDM_DISABLE: "1"
+          PIP_PROGRESS_BAR: "off"
+      - name: submit
+    model:
+      temperature: 0.7
+      top_p: 0.8
+      top_k: 20
+      max_total_tokens: 4096
+
+- name: swe_bench
+  sandbox:
+    provider: vefaas
+    runtime_timeout: 7200
+  agent:
+    name: react
+    max_steps: 4
+    tools:
+      - name: str_replace_editor
+      - name: stateful_shell
+        command_timeout: 30
+        env_vars:
+          PAGER: "cat"
+          GIT_PAGER: "cat"
+          MANPAGER: "cat"
+          TQDM_DISABLE: "1"
+          PIP_PROGRESS_BAR: "off"
+      - name: submit
+    model:
+      temperature: 0.7
+      top_p: 0.8
+      top_k: 20
+      max_total_tokens: 4096
