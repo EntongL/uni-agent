@@ -16,10 +16,10 @@ RAY_ADDRESS=${RAY_ADDRESS:-"http://127.0.0.1:8265"}
 # trainer.device Hydra value.
 export DEVICE=${DEVICE:-npu}
 export VERL_PLATFORM=${VERL_PLATFORM:-huawei}
-# Ray must assign a single NPU visibility value to each actor. With this
-# enabled, this verl version can receive the full comma-separated visibility
-# list as LOCAL_RANK and fail while parsing it as an integer.
-export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=0
+# Do not disable Ray's per-actor Ascend device isolation. This variable is
+# intentionally removed from the job runtime env as well; in this verl/Ray
+# combination, setting it (even to "0") activates the manual local-rank path.
+unset RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES || true
 
 # Make all local Ascend devices visible by default. Override this when running
 # on a subset of cards, for example ASCEND_RT_VISIBLE_DEVICES=0,1,2,3.

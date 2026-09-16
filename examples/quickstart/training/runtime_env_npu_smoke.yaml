@@ -17,9 +17,6 @@ env_vars:
   # group request GPU resources even though trainer.device=npu is configured.
   VERL_PLATFORM: "huawei"
   DEVICE: "npu"
-  # Let Ray set one physical NPU per actor. Setting this to 1 makes the
-  # current verl worker path derive LOCAL_RANK from the whole visibility list.
-  RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES: "0"
   PYTHONNOUSERSITE: "1"
   TORCH_NCCL_AVOID_RECORD_STREAMS: "1"
   CUDA_DEVICE_MAX_CONNECTIONS: "1"
