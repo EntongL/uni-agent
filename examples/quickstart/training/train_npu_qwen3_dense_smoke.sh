@@ -11,6 +11,16 @@ START_RAY=${START_RAY:-True}
 RAY_GCS_ADDRESS=${RAY_GCS_ADDRESS:-"127.0.0.1:6379"}
 RAY_ADDRESS=${RAY_ADDRESS:-"http://127.0.0.1:8265"}
 
+# Make both the driver and Ray job workers select the Ascend platform. The
+# resource name used by verl is derived from this platform, not only from the
+# trainer.device Hydra value.
+export DEVICE=${DEVICE:-npu}
+export VERL_PLATFORM=${VERL_PLATFORM:-huawei}
+# Ray must assign a single NPU visibility value to each actor. With this
+# enabled, this verl version can receive the full comma-separated visibility
+# list as LOCAL_RANK and fail while parsing it as an integer.
+export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=0
+
 # Make all local Ascend devices visible by default. Override this when running
 # on a subset of cards, for example ASCEND_RT_VISIBLE_DEVICES=0,1,2,3.
 if [[ -z "${ASCEND_RT_VISIBLE_DEVICES:-}" ]]; then
@@ -110,9 +120,28 @@ if [[ "${START_RAY}" == "True" ]]; then
             --resources="{\"NPU\": ${total_npus}}" \
             --disable-usage-stats
     else
-        echo "Ray cluster already running at ${RAY_GCS_ADDRESS}."
+        if ! ray status --address="${RAY_GCS_ADDRESS}" 2>/dev/null | grep -q "NPU"; then
+            echo "Existing Ray cluster at ${RAY_GCS_ADDRESS} has no NPU resource." >&2
+            echo "Stop that stale cluster, then rerun this script: ray stop -f" >&2
+            exit 1
+        fi
+        echo "Ray NPU cluster already running at ${RAY_GCS_ADDRESS}."
     fi
 fi
+
+# Fail before submitting a long-running job if this container cannot expose
+# Ascend to the exact verl installation that Ray will import.
+python3 -c '
+import torch
+import torch_npu  # noqa: F401
+from verl.plugin.platform import get_platform
+
+platform = get_platform()
+print(f"verl platform: {platform.__class__.__name__}, device={platform.device_name}, ray_resource={platform.ray_resource_name()}")
+assert platform.device_name == "npu", platform.device_name
+assert platform.ray_resource_name() == "NPU", platform.ray_resource_name()
+assert torch.npu.is_available(), "torch.npu.is_available() is false"
+'
 
 ray job submit --address "${RAY_ADDRESS}" --no-wait --runtime-env "${RUNTIME_ENV}" \
     -- env RAY_OVERRIDE_JOB_RUNTIME_ENV=1 \

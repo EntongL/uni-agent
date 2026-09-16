@@ -12,6 +12,14 @@ env_vars:
   # The repository's verl checkout is expected under the Ray working dir, or
   # verl must already be importable in the NPU image.
   PYTHONPATH: "verl"
+  # Force verl's platform detector to use the built-in Huawei/Ascend backend.
+  # Without this, a CUDA-capable torch installation can make the Ray worker
+  # group request GPU resources even though trainer.device=npu is configured.
+  VERL_PLATFORM: "huawei"
+  DEVICE: "npu"
+  # Let Ray set one physical NPU per actor. Setting this to 1 makes the
+  # current verl worker path derive LOCAL_RANK from the whole visibility list.
+  RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES: "0"
   PYTHONNOUSERSITE: "1"
   TORCH_NCCL_AVOID_RECORD_STREAMS: "1"
   CUDA_DEVICE_MAX_CONNECTIONS: "1"
