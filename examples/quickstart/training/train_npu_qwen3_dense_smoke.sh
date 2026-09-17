@@ -40,21 +40,21 @@ project_name=${PROJECT_NAME:-"Uni-Agent-Qwen3-0.6B-veomni-npu-smoke"}
 exp_name=${EXP_NAME:-"$(date +%Y%m%d%H%M%S)_exp"}
 
 RAY_DATA_HOME=${RAY_DATA_HOME:-"${HOME}/verl"}
-MODEL_PATH=${MODEL_PATH:-"${RAY_DATA_HOME}/models/Qwen3-0.6B"}
+MODEL_PATH=${MODEL_PATH:-"${RAY_DATA_HOME}/model/Qwen3-0.6B"}
 RUNTIME_ENV=${RUNTIME_ENV:-"examples/quickstart/training/runtime_env_npu_smoke.yaml"}
 TASK_CONFIG=${TASK_CONFIG:-"examples/quickstart/training/task_config_react_npu_smoke.yaml"}
 
 # If TRAIN_FILE / TEST_FILE are not supplied, make tiny files from the normal
 # Uni-Agent parquet files before submitting the Ray job.
-TRAIN_FILE=${TRAIN_FILE:-"${RAY_DATA_HOME}/data/uni_agent/npu_smoke_train.parquet"}
-TEST_FILE=${TEST_FILE:-"${RAY_DATA_HOME}/data/uni_agent/npu_smoke_test.parquet"}
-SOURCE_TRAIN_FILE=${SOURCE_TRAIN_FILE:-"${RAY_DATA_HOME}/data/uni_agent/swe_rebench_filtered_1150.parquet"}
+TRAIN_FILE=${TRAIN_FILE:-"${RAY_DATA_HOME}/input/data/uni_agent/npu_smoke_train.parquet"}
+TEST_FILE=${TEST_FILE:-"${RAY_DATA_HOME}/input/data/uni_agent/npu_smoke_test.parquet"}
+SOURCE_TRAIN_FILE=${SOURCE_TRAIN_FILE:-"${RAY_DATA_HOME}/input/data/uni_agent/swe_rebench_filtered.parquet"}
 SOURCE_TEST_FILE=${SOURCE_TEST_FILE:-"${SOURCE_TRAIN_FILE}"}
 SMOKE_TRAIN_ROWS=${SMOKE_TRAIN_ROWS:-1}
 SMOKE_TEST_ROWS=${SMOKE_TEST_ROWS:-1}
 
-CKPTS_DIR=${CKPTS_DIR:-"${RAY_DATA_HOME}/ckpts/${project_name}/${exp_name}"}
-AGENT_LOG_DIR=${AGENT_LOG_DIR:-"${RAY_DATA_HOME}/logs/${project_name}/${exp_name}"}
+CKPTS_DIR=${CKPTS_DIR:-"${RAY_DATA_HOME}/input/ckpts/${project_name}/${exp_name}"}
+AGENT_LOG_DIR=${AGENT_LOG_DIR:-"${RAY_DATA_HOME}/input/logs/${project_name}/${exp_name}"}
 
 # Generic Qwen3 uses a different tool-call format from Qwen3-Coder.
 TOOL_PARSER=${TOOL_PARSER:-"hermes"}
@@ -97,11 +97,20 @@ else
     # helper calls model.reshard(), which is only available after FSDP wrap.
     param_offload=False
 fi
+if [[ -n "${OFFLOAD:-}" ]]; then
+    offload=${OFFLOAD}
+elif (( NNODES * NGPUS_PER_NODE > 1 )); then
+    offload=True
+else
+    # The base engine also requires model parameters and gradient buffers to
+    # move together; optimizer offload is therefore disabled on the NO_SHARD
+    # single-NPU path.
+    offload=False
+fi
 usp_size=${USP_SIZE:-1}
 gen_tp=${GEN_TP:-1}
 infer_dp=${INFER_DP:-1}
 use_dynamic_bsz=${USE_DYNAMIC_BSZ:-True}
-offload=${OFFLOAD:-True}
 attn_impl=${ATTN_IMPL:-flash_attention_2}
 rollout_mem_util=${ROLLOUT_GPU_MEM_UTIL:-0.60}
 
