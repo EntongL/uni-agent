@@ -88,6 +88,15 @@ infer_ppo_max_token_len=$((max_prompt_length + max_response_length))
 # Dense-model parallelism: one NPU by default. Increase only after the one-NPU
 # path works; USP and TP must divide the available NPU topology.
 init_device=${INIT_DEVICE:-npu}
+if [[ -n "${PARAM_OFFLOAD:-}" ]]; then
+    param_offload=${PARAM_OFFLOAD}
+elif (( NNODES * NGPUS_PER_NODE > 1 )); then
+    param_offload=True
+else
+    # With one NPU VeOmni uses the non-sharded path. Its parameter offload
+    # helper calls model.reshard(), which is only available after FSDP wrap.
+    param_offload=False
+fi
 usp_size=${USP_SIZE:-1}
 gen_tp=${GEN_TP:-1}
 infer_dp=${INFER_DP:-1}
@@ -184,7 +193,7 @@ ray job submit --address "${RAY_ADDRESS}" --no-wait --runtime-env "${RUNTIME_ENV
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.actor.optim.weight_decay=0.1 \
     model_engine=veomni \
-    actor_rollout_ref.actor.veomni.param_offload=True \
+    actor_rollout_ref.actor.veomni.param_offload=${param_offload} \
     actor_rollout_ref.actor.veomni.optimizer_offload=${offload} \
     actor_rollout_ref.actor.veomni.enable_full_shard=True \
     actor_rollout_ref.actor.veomni.init_device=${init_device} \
