@@ -16,10 +16,15 @@ RAY_ADDRESS=${RAY_ADDRESS:-"http://127.0.0.1:8265"}
 # trainer.device Hydra value.
 export DEVICE=${DEVICE:-npu}
 export VERL_PLATFORM=${VERL_PLATFORM:-huawei}
-# Do not disable Ray's per-actor Ascend device isolation. This variable is
-# intentionally removed from the job runtime env as well; in this verl/Ray
-# combination, setting it (even to "0") activates the manual local-rank path.
-unset RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES || true
+# Some container launchers export LOCAL_RANK as the full visible-device list
+# (for example "0,1,...,15"). VeOmni parses this as one integer, so do not
+# pass the container-level value into the Ray job. Ray can set a per-worker
+# rank when it creates the actor.
+unset LOCAL_RANK
+# Keep Ray and verl in the same manual device-binding mode. The current verl
+# worker checks whether this variable exists, so "0" would still enable the
+# manual path while Ray interprets it as disabled.
+export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
 
 # Make all local Ascend devices visible by default. Override this when running
 # on a subset of cards, for example ASCEND_RT_VISIBLE_DEVICES=0,1,2,3.
@@ -82,6 +87,7 @@ infer_ppo_max_token_len=$((max_prompt_length + max_response_length))
 
 # Dense-model parallelism: one NPU by default. Increase only after the one-NPU
 # path works; USP and TP must divide the available NPU topology.
+init_device=${INIT_DEVICE:-npu}
 usp_size=${USP_SIZE:-1}
 gen_tp=${GEN_TP:-1}
 infer_dp=${INFER_DP:-1}
@@ -181,6 +187,7 @@ ray job submit --address "${RAY_ADDRESS}" --no-wait --runtime-env "${RUNTIME_ENV
     actor_rollout_ref.actor.veomni.param_offload=True \
     actor_rollout_ref.actor.veomni.optimizer_offload=${offload} \
     actor_rollout_ref.actor.veomni.enable_full_shard=True \
+    actor_rollout_ref.actor.veomni.init_device=${init_device} \
     actor_rollout_ref.actor.veomni.ulysses_parallel_size=${usp_size} \
     actor_rollout_ref.actor.veomni.attn_implementation=${attn_impl} \
     actor_rollout_ref.actor.veomni.rms_norm_implementation=npu \

@@ -17,6 +17,10 @@ env_vars:
   # group request GPU resources even though trainer.device=npu is configured.
   VERL_PLATFORM: "huawei"
   DEVICE: "npu"
+  # Keep Ray and verl in the same manual device-binding mode. The current
+  # worker code treats the presence of this variable as enabled, so "0" is
+  # not a valid way to disable it.
+  RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES: "1"
   PYTHONNOUSERSITE: "1"
   TORCH_NCCL_AVOID_RECORD_STREAMS: "1"
   CUDA_DEVICE_MAX_CONNECTIONS: "1"
