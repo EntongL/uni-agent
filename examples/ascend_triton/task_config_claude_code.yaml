@@ -1,0 +1,54 @@
+# AscendKernelBench's parquet rows supply the canonical sandbox image and task
+# metadata. This recipe owns the resident-container attachment and Claude Code
+# workflow. Set the three container paths below to match the prepared image.
+- name: triton_op_generator
+  sandbox:
+    provider: docker
+    runtime_timeout: 7200
+    sandbox_kwargs:
+      container_ref: uni-agent-resident
+      # The dataset's canonical image name need not be a local Docker tag for
+      # this externally managed resident container.
+      verify_container_image: false
+
+  agent_workdir: /mnt/model/lientong/AscendKernelBench/agent
+  episode_root: /tmp/uni-agent-triton-episodes
+  kernelgym_url: http://10.1.30.41:19001
+  kernelgym_toolkit: sandbox_v3
+  kernelgym_backend: triton
+  entry_point: Model
+  correctness_trials: 3
+  performance_trials: 10
+  evaluation_timeout: 900
+  evaluation_poll_interval: 2
+  cleanup_episode: true
+
+  agent:
+    name: claude_code
+    # AscendKernelBench's triton-ascend-kernelgen workflow is implemented as
+    # Claude Code skills, so this must remain false.
+    disable_slash_commands: false
+    enable_subagents: false
+    max_turns: 12
+    run_timeout: 3600
+    extra_env:
+      KERNELGYM_SERVER_URL: http://10.1.30.41:19001
+      KERNELGYM_TOOLKIT: sandbox_v3
+      MAX_SMOKE: "2"
+      MAX_TURNS: "1"
+    model:
+      temperature: 0.7
+      top_p: 0.8
+      max_total_tokens: 32768
+
+  prompt_template:
+    - role: user
+      content: |-
+        Generate a correct Ascend Triton implementation for this PyTorch operator.
+
+        {problem_statement}
+
+        Work from the runtime REFERENCE_PATH and OUTPUT_DIR supplied below. Use the
+        installed triton-ascend-kernelgen workflow and its sibling skills. Keep the
+        reference immutable, write all generated artifacts under OUTPUT_DIR, and
+        use KernelGYM for evaluation. Do not run verify.py or benchmark.py.
