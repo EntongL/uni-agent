@@ -20,9 +20,24 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 _TERMINAL_STATUSES = {"completed", "failed", "timeout", "timed_out", "cancelled", "canceled", "error"}
+_DEFAULT_REQUEST_TIMEOUT = 30.0
+_MAX_RESULT_REQUEST_TIMEOUT = 120.0
 
 
-def _request_json(url: str, *, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+def _request_json(
+    url: str,
+    *,
+    payload: dict[str, Any] | None = None,
+    timeout: float = _DEFAULT_REQUEST_TIMEOUT,
+) -> dict[str, Any]:
+    """Send one KernelGYM request and decode its JSON response.
+
+    The timeout is a socket timeout for this individual request, not the
+    overall evaluation budget.  In particular, the submit endpoint may take
+    longer than the polling requests when KernelGYM starts work synchronously.
+    """
+    if timeout <= 0:
+        raise ValueError("KernelGYM request timeout must be positive")
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     request = Request(
         url,
@@ -31,12 +46,16 @@ def _request_json(url: str, *, payload: dict[str, Any] | None = None) -> dict[st
         method="POST" if data is not None else "GET",
     )
     try:
-        with urlopen(request, timeout=30) as response:  # noqa: S310 - caller configures the trusted local service.
+        with urlopen(request, timeout=timeout) as response:  # noqa: S310 - caller configures the trusted local service.
             decoded = response.read().decode("utf-8")
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[-1000:]
         raise RuntimeError(f"KernelGYM HTTP {exc.code}: {detail}") from exc
+    except TimeoutError as exc:
+        raise TimeoutError(f"KernelGYM request timed out after {timeout:g}s: {url}") from exc
     except URLError as exc:
+        if isinstance(exc.reason, TimeoutError):
+            raise TimeoutError(f"KernelGYM request timed out after {timeout:g}s: {url}") from exc
         raise RuntimeError(f"KernelGYM request failed: {exc.reason}") from exc
     try:
         result = json.loads(decoded)
@@ -107,6 +126,10 @@ def evaluate(
             "num_correct_trials": correctness_trials,
             "num_perf_trials": performance_trials,
         },
+        # A slow submit must not be cut off by the old 30-second per-request
+        # default.  Keep this inside the task runner's timeout, which adds a
+        # 60-second cleanup margin around ``evaluation_timeout``.
+        timeout=max(_DEFAULT_REQUEST_TIMEOUT, timeout + 30.0),
     )
     submitted_task_id = _task_id(submission) or task_id
     status = _status_value(submission)
@@ -117,12 +140,28 @@ def evaluate(
     quoted_task_id = quote(submitted_task_id, safe="")
     last_status = submission
     while time.monotonic() < deadline:
-        time.sleep(poll_interval)
-        last_status = _request_json(f"{base_url}/status/{quoted_task_id}")
+        remaining = deadline - time.monotonic()
+        time.sleep(min(poll_interval, max(0.0, remaining)))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            last_status = _request_json(
+                f"{base_url}/status/{quoted_task_id}",
+                timeout=min(_DEFAULT_REQUEST_TIMEOUT, remaining),
+            )
+        except TimeoutError:
+            # A status request is only a probe.  KernelGYM may be briefly
+            # overloaded while the worker is compiling; retry until the
+            # task-level deadline instead of aborting without result.json.
+            continue
         status = _status_value(last_status)
         if status not in _TERMINAL_STATUSES:
             continue
-        results = _request_json(f"{base_url}/results/{quoted_task_id}")
+        results = _request_json(
+            f"{base_url}/results/{quoted_task_id}",
+            timeout=max(_DEFAULT_REQUEST_TIMEOUT, min(_MAX_RESULT_REQUEST_TIMEOUT, timeout)),
+        )
         return _result_payload(results)
 
     return {

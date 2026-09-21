@@ -29,6 +29,17 @@
     # Claude Code skills, so this must remain false.
     disable_slash_commands: false
     enable_subagents: false
+    # The resident container defaults to root. Claude Code blocks its broad
+    # bypassPermissions mode as root, so pre-approve this workflow's tool set
+    # and reject any other tool without an interactive prompt.
+    permission_mode: dontAsk
+    allowed_tools:
+      - Bash
+      - Read
+      - Edit
+      - Write
+      - Glob
+      - Grep
     max_turns: 12
     run_timeout: 3600
     extra_env:
@@ -36,6 +47,9 @@
       KERNELGYM_TOOLKIT: sandbox_v3
       MAX_SMOKE: "2"
       MAX_TURNS: "1"
+      # GLM-5.2 has a 1M-token context window but Claude Code does not know
+      # third-party model aliases by default.
+      CLAUDE_CODE_MAX_CONTEXT_TOKENS: "1048576"
     model:
       temperature: 0.7
       top_p: 0.8

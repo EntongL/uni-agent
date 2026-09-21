@@ -203,6 +203,28 @@ def test_run_accepts_user_only_message_without_rewriting():
 
 @pytest.mark.cpu
 @pytest.mark.level0
+def test_claude_argv_supports_explicit_root_safe_tool_permissions():
+    config = ClaudeCodeConfig(
+        model=ModelConfig(base_url="http://gateway:8000/v1", model_name="policy"),
+        permission_mode="dontAsk",
+        allowed_tools=["Bash", "Read", "Edit", "Write", "Glob", "Grep"],
+    )
+
+    argv = ClaudeCodeAgent(config)._claude_argv("fix the bug")
+
+    assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
+    assert argv[argv.index("--allowedTools") + 1].split(",") == [
+        "Bash",
+        "Read",
+        "Edit",
+        "Write",
+        "Glob",
+        "Grep",
+    ]
+
+
+@pytest.mark.cpu
+@pytest.mark.level0
 def test_run_requires_exactly_one_user_message():
     config = ClaudeCodeConfig(
         model=ModelConfig(base_url="http://gateway:8000/v1", model_name="policy"),

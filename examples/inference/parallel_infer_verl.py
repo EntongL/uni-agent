@@ -263,6 +263,7 @@ def _report(
             "served_model_name": served_model_name,
             "data_path": os.path.expanduser(args.data_path),
             "task_config": args.task_config,
+            "start_index": args.start_index,
             "n": n,
             "num_prompts": num_prompts,
             "num_scored_sessions": num_scored,
@@ -320,6 +321,12 @@ def main() -> None:
         default=None,
         help="Only run the first N samples (smoke testing); omit for the full dataset.",
     )
+    parser.add_argument(
+        "--start-index",
+        type=int,
+        default=0,
+        help="Zero-based dataset row at which selection begins; combine with --limit 1 for one exact sample.",
+    )
 
     parser.add_argument(
         "--n", type=int, default=1, help="Rollout sessions per instance (rollout.n; scores average over all)."
@@ -367,6 +374,8 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    if args.start_index < 0:
+        parser.error("--start-index must be non-negative")
 
     ray.init()
 
@@ -375,6 +384,8 @@ def main() -> None:
 
     dataset = load_dataset("parquet", data_files=args.data_path, split="train")
     samples = dataset.to_list()
+    if args.start_index:
+        samples = samples[args.start_index :]
     if args.limit is not None:
         samples = samples[: args.limit]
     if not samples:

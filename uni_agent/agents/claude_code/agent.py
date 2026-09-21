@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field
 
@@ -77,6 +77,14 @@ class ClaudeCodeConfig(AgentConfig):
     disable_slash_commands: bool = Field(
         default=True,
         description="Disable Claude Code skills and slash commands for deterministic rollouts.",
+    )
+    permission_mode: Literal["default", "acceptEdits", "dontAsk", "bypassPermissions", "plan"] = Field(
+        default="bypassPermissions",
+        description="Claude Code permission mode. Use dontAsk with allowed_tools for root containers.",
+    )
+    allowed_tools: list[str] = Field(
+        default_factory=list,
+        description="Tools to pre-approve. Pair with permission_mode=dontAsk for non-interactive root execution.",
     )
     verbose: bool = Field(default=False, description="Pass --verbose (streams per-turn detail; noisy at scale).")
     run_timeout: float = Field(
@@ -170,10 +178,12 @@ class ClaudeCodeAgent(Agent):
             "--model",
             model,
             "--permission-mode",
-            "bypassPermissions",
+            cfg.permission_mode,
         ]
         if cfg.disable_slash_commands:
             argv.append("--disable-slash-commands")
+        if cfg.allowed_tools:
+            argv += ["--allowedTools", ",".join(cfg.allowed_tools)]
         disallowed_tools = ["AskUserQuestion"]
         if not cfg.enable_subagents:
             disallowed_tools.extend(["Agent", "Task"])
