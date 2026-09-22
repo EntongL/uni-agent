@@ -125,6 +125,7 @@ class ClaudeCodeAgent(Agent):
 
         # Point claude at the Anthropic endpoint (gateway session or vLLM) and run it.
         endpoint = _strip_v1(base_url)
+        model = cfg.model.model_name
         argv = self._claude_argv(user_prompt)
         env = self._claude_env(endpoint)
         # Keep the effective route visible in framework logs.  Do not log the
