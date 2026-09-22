@@ -66,6 +66,32 @@ DEFAULT_RESPONSE_LENGTH = 65536
 DEFAULT_PROMPT_LENGTH = 4096
 
 
+def _clear_inherited_local_rank() -> None:
+    """Let Ray/vLLM assign worker ranks instead of inheriting a container list.
+
+    Some Ascend launchers export ``LOCAL_RANK`` as the complete visible-device
+    list (for example ``0,1,2,...``). vLLM parses this variable as one integer
+    inside every worker, so an inherited list aborts engine startup before the
+    model can serve a request. This script launches Ray-managed workers rather
+    than running under torchrun, therefore the driver must not forward it.
+    """
+    inherited = os.environ.pop("LOCAL_RANK", None)
+    if inherited is not None:
+        logger.warning("Ignoring inherited LOCAL_RANK=%r; Ray/vLLM will assign worker-local ranks", inherited)
+
+
+def _init_ray() -> None:
+    """Connect to an explicit Ray cluster, or start a local one for a standalone run."""
+    if ray.is_initialized():
+        return
+    if os.environ.get("RAY_ADDRESS"):
+        logger.info("Connecting to the Ray cluster selected by RAY_ADDRESS=%s", os.environ["RAY_ADDRESS"])
+        ray.init(address="auto")
+    else:
+        logger.info("No RAY_ADDRESS set; starting/using the local Ray runtime")
+        ray.init()
+
+
 def _rule(text: str = "", width: int = 50, ch: str = "-") -> str:
     """A centered-title horizontal rule."""
     if not text:
@@ -377,7 +403,8 @@ def main() -> None:
     if args.start_index < 0:
         parser.error("--start-index must be non-negative")
 
-    ray.init()
+    _clear_inherited_local_rank()
+    _init_ray()
 
     resolver = TaskConfigResolver.from_file(args.task_config)
     served_model_name = args.served_model_name or os.path.basename(os.path.expanduser(args.model_path).rstrip("/"))

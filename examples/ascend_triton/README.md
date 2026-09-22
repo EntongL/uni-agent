@@ -33,6 +33,14 @@ export DEVICE=npu
 export VERL_PLATFORM=huawei
 export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
 export GLOBAL_CONCURRENCY=1
+unset LOCAL_RANK
+
+# Single-node example: start Ray after LOCAL_RANK has been cleared.
+ray start --head \
+  --port=6379 \
+  --resources='{"NPU": 1}' \
+  --disable-usage-stats
+export RAY_ADDRESS=127.0.0.1:6379
 
 python3 examples/inference/parallel_infer_verl.py \
   --data-path /path/to/AscendKernelBench/uniagent-training-data/kernelbench_level1.parquet \
