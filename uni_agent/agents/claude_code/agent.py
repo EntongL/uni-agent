@@ -127,6 +127,10 @@ class ClaudeCodeAgent(Agent):
         endpoint = _strip_v1(base_url)
         argv = self._claude_argv(user_prompt)
         env = self._claude_env(endpoint)
+        # Keep the effective route visible in framework logs.  Do not log the
+        # auth token or prompt: this is only to distinguish a per-session
+        # Uni-Agent Gateway URL from an external CCR/Anthropic router.
+        logger.info("claude_code: effective endpoint=%s model=%s", endpoint, model)
         logger.info("claude_code: launch with user_prompt:\n%s", user_prompt)
         proc = await sandbox.exec(argv, env=env, timeout=cfg.run_timeout, workdir=workdir)
 

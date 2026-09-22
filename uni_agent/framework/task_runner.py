@@ -145,7 +145,13 @@ async def run_task(
         task = _inject_gateway_tunnel(task, session.base_url)
 
     task_name = task.get("name")
-    logger.info("run_task start: task=%s sample_index=%s", task_name, sample_index)
+    logger.info(
+        "run_task start: task=%s sample_index=%s session_base_url=%s model_name=%s",
+        task_name,
+        sample_index,
+        session.base_url,
+        model_name,
+    )
 
     prompt = task.get("prompt", [])
     with task_span(tools_kwargs, task_name=task_name, prompt=prompt) as span:

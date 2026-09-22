@@ -45,9 +45,10 @@ export RAY_ADDRESS=127.0.0.1:6379
 python3 examples/inference/parallel_infer_verl.py \
   --data-path /path/to/AscendKernelBench/uniagent-training-data/kernelbench_level1.parquet \
   --model-path /path/to/local-model \
+  --served-model-name glm-5.2 \
   --task-config examples/ascend_triton/task_config_claude_code.yaml \
   --engine vllm \
-  --tool-parser <parser-matching-the-model> \
+  --tool-parser qwen3_xml \
   --nnodes 1 \
   --n-gpus-per-node 1 \
   --tensor-parallel-size 1 \
@@ -61,10 +62,47 @@ python3 examples/inference/parallel_infer_verl.py \
 ```
 
 Set `--tool-parser` to the parser used by the rollout model's chat template;
-for example, current Uni-Agent recipes use `qwen3_coder` for Qwen3-Coder and
-`hermes` for generic Qwen3. It must agree with the vLLM tool-call parser. Use
+for example, use `qwen3_coder` for Qwen3-Coder and `qwen3_xml` for the standard
+Qwen3 XML tool-call format. It must agree with the vLLM tool-call parser. Use
 the same `--model-path`, parser, and hardware settings that the later RL job
 will use.
+
+For a GLM checkpoint, do not assume `hermes` or `qwen3_coder`. Inspect the
+parsers installed in the rollout environment and choose the GLM-specific one
+when available:
+
+```bash
+python3 - <<'PY'
+from vllm.tool_parsers import ToolParserManager
+print("eager:", sorted(getattr(ToolParserManager, "tool_parsers", {})))
+print("lazy:", sorted(getattr(ToolParserManager, "lazy_parsers", {})))
+for name in ("hermes", "qwen3_coder", "qwen3_xml", "glm45", "glm47"):
+    try:
+        parser = ToolParserManager.get_tool_parser(name)
+    except Exception as exc:
+        print(f"{name}: unavailable ({type(exc).__name__}: {exc})")
+    else:
+        print(f"{name}: {parser}")
+PY
+```
+
+The recipe enables temporary Claude diagnostics. The full Claude debug stream
+is written inside the resident container at
+`/tmp/uni-agent-claude-debug.log`; inspect it with:
+
+```bash
+docker exec uni-agent-resident sh -lc \
+  'tail -n 300 /tmp/uni-agent-claude-debug.log'
+```
+
+`--served-model-name` is the model string sent by Claude Code to the
+Anthropic-compatible Gateway. It does not select the local checkpoint; the
+checkpoint is selected by `--model-path`. In the current resident-router setup,
+`glm-5.2` is the alias that reached the Gateway without the `Model not exist`
+400 seen with `Qwen3-0.6B` and `claude-sonnet-4-5`. It is therefore valid for
+the smoke even when `--model-path` points to Qwen3-0.6B; the parser must still
+follow the actual checkpoint (`qwen3_xml`). Prefer the exact ID returned by the
+router's `/v1/models` if that endpoint is available.
 
 The smoke passes when the summary reports `1 / 1` scored session and
 `result.json` has one score. `reward=0` is a valid model outcome. Inspect
