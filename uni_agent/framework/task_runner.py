@@ -99,7 +99,10 @@ def _extract_ssh_reverse_tunnel(
         )
     cleaned_kwargs = dict(sandbox_kwargs)
     del cleaned_kwargs["ssh_reverse_tunnel"]
-    cleaned_task = _deep_merge(task, {"sandbox": {"sandbox_kwargs": cleaned_kwargs}})
+    cleaned_task = dict(task)
+    cleaned_sandbox = dict(sandbox)
+    cleaned_sandbox["sandbox_kwargs"] = cleaned_kwargs
+    cleaned_task["sandbox"] = cleaned_sandbox
     return cleaned_task, SshReverseTunnelConfig.from_mapping(raw_config)
 
 
