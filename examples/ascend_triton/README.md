@@ -111,6 +111,34 @@ matching `framework.log`, `trajectory.json`, and `trajectory.npz`. For the first
 `cleanup_episode: false` in `task_config_claude_code.yaml` to retain the
 task-owned candidate files, then restore it before multi-episode runs.
 
+## Cross-host resident tunnel
+
+When the resident Docker host cannot route to the Ray/Gateway host, add
+`sandbox.sandbox_kwargs.ssh_reverse_tunnel` to the task config. The rollout
+process starts one SSH reverse forward per Gateway session and closes it after
+the task finishes. `remote_port: 0` asks the SSH server to allocate a unique
+remote port, which is safe for concurrent rollouts.
+
+```yaml
+sandbox:
+  provider: docker
+  sandbox_kwargs:
+    container_ref: uni-agent-resident
+    ssh_reverse_tunnel:
+      ssh_host: <atlas-41-address>
+      ssh_user: root
+      remote_port: 0
+      identity_file: /root/.ssh/id_ed25519
+      known_hosts_file: /root/.ssh/known_hosts
+```
+
+The training container must have an `ssh` client and key-based access to
+`ssh_host`; the SSH server must allow `AllowTcpForwarding`. The resident
+container should use host networking so its `127.0.0.1:<allocated-port>` is the
+atlas host loopback. Logs include the allocated tunnel port without printing
+the SSH key. If the SSH server does not report an allocated port for
+`remote_port: 0`, set a unique fixed `remote_port` per concurrent worker.
+
 ## Direct endpoint smoke (optional)
 
 `run_single_sample.py` remains useful for evaluating an already hosted

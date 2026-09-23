@@ -10,6 +10,15 @@
       # The dataset's canonical image name need not be a local Docker tag for
       # this externally managed resident container.
       verify_container_image: false
+      # Optional cross-host SSH tunnel. The rollout container starts one
+      # reverse tunnel per Gateway session and rewrites Claude's endpoint to
+      # 127.0.0.1:<allocated-port> inside the host-networked resident.
+      # ssh_reverse_tunnel:
+      #   ssh_host: <atlas-41-address>
+      #   ssh_user: root
+      #   remote_port: 0
+      #   identity_file: /root/.ssh/id_ed25519
+      #   known_hosts_file: /root/.ssh/known_hosts
 
   agent_workdir: /mnt/model/lientong/AscendKernelBench/agent
   episode_root: /tmp/uni-agent-triton-episodes
@@ -40,6 +49,12 @@
       - Write
       - Glob
       - Grep
+    # Temporary Gateway smoke diagnostics. Remove or disable these for large
+    # RL runs after the model/parser combination is verified.
+    verbose: true
+    extra_args:
+      - --debug-file
+      - /tmp/uni-agent-claude-debug.log
     max_turns: 12
     run_timeout: 3600
     extra_env:

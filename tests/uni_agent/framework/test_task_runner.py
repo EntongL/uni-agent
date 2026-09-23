@@ -3,6 +3,7 @@ import pytest
 from uni_agent.framework import task_runner as task_runner_module
 from uni_agent.framework.task_runner import (
     _extract_upstream,
+    _extract_ssh_reverse_tunnel,
     _inject_gateway_tunnel,
     _rewrite_gateway_url,
     compute_score,
@@ -69,6 +70,26 @@ def test_inject_gateway_tunnel_rejects_non_yuanrong_sandbox():
     task = {"sandbox": {"provider": "local", "sandbox_kwargs": {"proxy_port": 38197}}}
     with pytest.raises(ValueError, match="supported only on 'openyuanrong'"):
         _inject_gateway_tunnel(task, "http://gateway.example:40169/v1")
+
+
+@pytest.mark.cpu
+@pytest.mark.level0
+def test_extract_ssh_reverse_tunnel_removes_runner_only_config():
+    task = {
+        "sandbox": {
+            "provider": "docker",
+            "sandbox_kwargs": {
+                "container_ref": "uni-agent-resident",
+                "ssh_reverse_tunnel": {"ssh_host": "atlas.example", "ssh_user": "root"},
+            },
+        }
+    }
+
+    cleaned, config = _extract_ssh_reverse_tunnel(task)
+
+    assert config is not None
+    assert config.remote_port == 0
+    assert cleaned["sandbox"]["sandbox_kwargs"] == {"container_ref": "uni-agent-resident"}
 
 
 @pytest.mark.cpu
@@ -148,6 +169,66 @@ async def test_run_task_returns_task_result_while_ignoring_framework_tool_config
     )
 
     assert result is task_result
+
+
+@pytest.mark.cpu
+@pytest.mark.level0
+@pytest.mark.asyncio
+async def test_run_task_starts_and_closes_per_session_ssh_tunnel(monkeypatch):
+    task_result = TaskResult(reward=1.0, accuracy=1.0, finished=True)
+    captured = {}
+
+    class _Tunnel:
+        remote_port = 18080
+
+        def __init__(self):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    tunnel = _Tunnel()
+
+    async def _open(gateway_url, config):
+        captured["gateway_url"] = gateway_url
+        captured["config"] = config
+        return tunnel
+
+    monkeypatch.setattr(task_runner_module.SshReverseTunnel, "open", _open)
+
+    class _Task:
+        def __init__(self, config):
+            captured["task"] = config
+
+        async def run(self):
+            return task_result
+
+    monkeypatch.setattr(task_runner_module, "get_task", _Task)
+
+    result = await run_task(
+        session=SessionHandle(session_id="session", base_url="http://gateway:42259/sessions/session/v1"),
+        tools_kwargs={
+            "task": {
+                "name": "stub",
+                "sandbox": {
+                    "provider": "docker",
+                    "sandbox_kwargs": {
+                        "container_ref": "uni-agent-resident",
+                        "ssh_reverse_tunnel": {"ssh_host": "atlas.example", "ssh_user": "root"},
+                    },
+                },
+            }
+        },
+    )
+
+    assert result is task_result
+    assert captured["gateway_url"] == "http://gateway:42259/sessions/session/v1"
+    assert captured["config"].remote_port == 0
+    assert "ssh_reverse_tunnel" not in captured["task"]["sandbox"]["sandbox_kwargs"]
+    assert captured["task"]["agent"]["model"]["base_url"] == (
+        "http://127.0.0.1:18080/sessions/session/v1"
+    )
+    assert tunnel.closed is True
 
 
 @pytest.mark.cpu

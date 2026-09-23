@@ -11,6 +11,8 @@ from uni_agent.rl_insight.adapter import task_span
 from uni_agent.tasks import TaskConfigResolver, TaskResult, get_task
 from uni_agent.tasks.config import _deep_merge
 
+from .ssh_reverse_tunnel import SshReverseTunnel, SshReverseTunnelConfig
+
 if TYPE_CHECKING:
     from uni_agent.gateway.session import SessionHandle
 
@@ -75,6 +77,32 @@ def _inject_gateway_tunnel(task: dict[str, Any], base_url: str) -> dict[str, Any
     )
 
 
+def _extract_ssh_reverse_tunnel(
+    task: dict[str, Any],
+) -> tuple[dict[str, Any], SshReverseTunnelConfig | None]:
+    """Remove and parse runner-owned SSH tunnel config before task construction."""
+
+    sandbox = task.get("sandbox") or {}
+    sandbox_kwargs = sandbox.get("sandbox_kwargs") or {}
+    raw_config = sandbox_kwargs.get("ssh_reverse_tunnel")
+    if raw_config is None:
+        return task, None
+    if sandbox.get("provider") != "docker":
+        raise ValueError(
+            "sandbox.sandbox_kwargs.ssh_reverse_tunnel is currently supported only "
+            f"for provider='docker', got provider={sandbox.get('provider')!r}"
+        )
+    if "proxy_port" in sandbox_kwargs:
+        raise ValueError(
+            "configure either sandbox.sandbox_kwargs.proxy_port or "
+            "sandbox.sandbox_kwargs.ssh_reverse_tunnel, not both"
+        )
+    cleaned_kwargs = dict(sandbox_kwargs)
+    del cleaned_kwargs["ssh_reverse_tunnel"]
+    cleaned_task = _deep_merge(task, {"sandbox": {"sandbox_kwargs": cleaned_kwargs}})
+    return cleaned_task, SshReverseTunnelConfig.from_mapping(raw_config)
+
+
 def score_from_runner_result(
     *,
     data_source: str,
@@ -135,34 +163,57 @@ async def run_task(
         },
     )
 
-    # openyuanrong reverse tunnel: the sandbox config pins the in-sandbox tunnel
-    # port (sandbox_kwargs.proxy_port); only the gateway upstream + the agent's
-    # base_url rewrite are runtime-derived (session.base_url), so fill them in
-    # here when a tunnel is configured. The provider check lives inside
-    # _inject_gateway_tunnel (rejected loudly for non-Yuanrong sandboxes).
-    tunnel_port = (task.get("sandbox") or {}).get("sandbox_kwargs", {}).get("proxy_port")
-    if tunnel_port and session.base_url:
-        task = _inject_gateway_tunnel(task, session.base_url)
+    task, ssh_tunnel_config = _extract_ssh_reverse_tunnel(task)
+    ssh_tunnel: SshReverseTunnel | None = None
 
-    task_name = task.get("name")
-    logger.info(
-        "run_task start: task=%s sample_index=%s session_base_url=%s model_name=%s",
-        task_name,
-        sample_index,
-        session.base_url,
-        model_name,
-    )
+    try:
+        if ssh_tunnel_config is not None:
+            if not session.base_url:
+                raise ValueError("ssh_reverse_tunnel requires a live Gateway session base_url")
+            ssh_tunnel = await SshReverseTunnel.open(session.base_url, ssh_tunnel_config)
+            task = _deep_merge(
+                task,
+                {
+                    "agent": {
+                        "model": {
+                            "base_url": _rewrite_gateway_url(session.base_url, ssh_tunnel.remote_port)
+                        }
+                    }
+                },
+            )
+            logger.info(
+                "run_task: SSH reverse tunnel mapped session to sandbox endpoint 127.0.0.1:%s",
+                ssh_tunnel.remote_port,
+            )
 
-    prompt = task.get("prompt", [])
-    with task_span(tools_kwargs, task_name=task_name, prompt=prompt) as span:
-        task_instance = get_task(task)
-        result = await task_instance.run()
-        span.record_result(result, reward_posted=False)
+        # openyuanrong reverse tunnel: the sandbox config pins the in-sandbox
+        # tunnel port; runtime gateway details are injected from session.base_url.
+        tunnel_port = (task.get("sandbox") or {}).get("sandbox_kwargs", {}).get("proxy_port")
+        if tunnel_port and session.base_url:
+            task = _inject_gateway_tunnel(task, session.base_url)
+
+        task_name = task.get("name")
         logger.info(
-            "run_task done: task=%s reward=%s acc=%s finished=%s",
+            "run_task start: task=%s sample_index=%s session_base_url=%s model_name=%s",
             task_name,
-            result.reward,
-            result.accuracy,
-            result.finished,
+            sample_index,
+            session.base_url,
+            model_name,
         )
-    return result
+
+        prompt = task.get("prompt", [])
+        with task_span(tools_kwargs, task_name=task_name, prompt=prompt) as span:
+            task_instance = get_task(task)
+            result = await task_instance.run()
+            span.record_result(result, reward_posted=False)
+            logger.info(
+                "run_task done: task=%s reward=%s acc=%s finished=%s",
+                task_name,
+                result.reward,
+                result.accuracy,
+                result.finished,
+            )
+        return result
+    finally:
+        if ssh_tunnel is not None:
+            await ssh_tunnel.close()
