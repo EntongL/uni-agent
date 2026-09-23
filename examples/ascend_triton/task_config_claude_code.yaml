@@ -61,7 +61,7 @@
       KERNELGYM_SERVER_URL: http://10.1.30.41:19001
       KERNELGYM_TOOLKIT: sandbox_v3
       MAX_SMOKE: "2"
-      MAX_TURNS: "1"
+      MAX_TURNS: "12"
       # GLM-5.2 has a 1M-token context window but Claude Code does not know
       # third-party model aliases by default.
       CLAUDE_CODE_MAX_CONTEXT_TOKENS: "1048576"
@@ -73,11 +73,14 @@
   prompt_template:
     - role: user
       content: |-
-        Generate a correct Ascend Triton implementation for this PyTorch operator.
+        Generate a correct Ascend Triton implementation for the following PyTorch operator.
+        Preserve the reference Model interface and behavior. The implementation must
+        define Model in OUTPUT_DIR/kernel_code.py.
 
-        {problem_statement}
+        Reference implementation:
+        {operator_src}
 
         Work from the runtime REFERENCE_PATH and OUTPUT_DIR supplied below. Use the
         installed triton-ascend-kernelgen workflow and its sibling skills. Keep the
-        reference immutable, write all generated artifacts under OUTPUT_DIR, and
-        use KernelGYM for evaluation. Do not run verify.py or benchmark.py.
+        reference immutable and write all generated artifacts under OUTPUT_DIR.
+        Use KernelGYM for evaluation. Do not run verify.py or benchmark.py.

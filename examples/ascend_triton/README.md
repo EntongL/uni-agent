@@ -48,7 +48,7 @@ python3 examples/inference/parallel_infer_verl.py \
   --served-model-name glm-5.2 \
   --task-config examples/ascend_triton/task_config_claude_code.yaml \
   --engine vllm \
-  --tool-parser qwen3_xml \
+  --tool-parser hermes \
   --nnodes 1 \
   --n-gpus-per-node 1 \
   --tensor-parallel-size 1 \
@@ -62,8 +62,11 @@ python3 examples/inference/parallel_infer_verl.py \
 ```
 
 Set `--tool-parser` to the parser used by the rollout model's chat template;
-for example, use `qwen3_coder` for Qwen3-Coder and `qwen3_xml` for the standard
-Qwen3 XML tool-call format. It must agree with the vLLM tool-call parser. Use
+for example, use `hermes` for standard Qwen3 models whose template emits
+`<tool_call>{"name": ..., "arguments": ...}</tool_call>`. Qwen3-Coder models
+may instead use the function/parameter XML format; select `qwen3_xml` or
+`qwen3_coder` according to the actual checkpoint and installed parser. It must
+agree with the model's output format. Use
 the same `--model-path`, parser, and hardware settings that the later RL job
 will use.
 
@@ -101,7 +104,8 @@ checkpoint is selected by `--model-path`. In the current resident-router setup,
 `glm-5.2` is the alias that reached the Gateway without the `Model not exist`
 400 seen with `Qwen3-0.6B` and `claude-sonnet-4-5`. It is therefore valid for
 the smoke even when `--model-path` points to Qwen3-0.6B; the parser must still
-follow the actual checkpoint (`qwen3_xml`). Prefer the exact ID returned by the
+follow the actual checkpoint (`hermes` for the standard Qwen3 JSON tool-call
+template). Prefer the exact ID returned by the
 router's `/v1/models` if that endpoint is available.
 
 The smoke passes when the summary reports `1 / 1` scored session and
