@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import logging
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
@@ -18,6 +19,33 @@ from verl.utils.tokenizer import normalize_token_ids
 from verl.utils.tokenizer.chat_template import apply_chat_template as _apply_chat_template
 from verl.utils.tokenizer.chat_template import initialize_turn_separator
 from verl.utils.tokenizer.continuous_token_wiring import create_continuous_token_builder
+
+logger = logging.getLogger(__name__)
+
+_TOOL_DEBUG_TEXT_LIMIT = 4000
+_TOOL_DEBUG_ARGUMENT_LIMIT = 1600
+
+
+def _debug_text(value: object, *, limit: int = _TOOL_DEBUG_TEXT_LIMIT) -> str:
+    """Return a bounded representation suitable for tool-parser diagnostics."""
+    text = value if isinstance(value, str) else repr(value)
+    if len(text) <= limit:
+        return text
+    return f"...{text[-limit:]}"
+
+
+def _debug_tool_calls(calls: list[Any]) -> list[dict[str, object]]:
+    """Summarize parsed calls without allowing large arguments into the logs."""
+    return [
+        {
+            "name": getattr(call, "name", None),
+            "arguments": _debug_text(
+                getattr(call, "arguments", None),
+                limit=_TOOL_DEBUG_ARGUMENT_LIMIT,
+            ),
+        }
+        for call in calls
+    ]
 
 # Map backend stop_reason values into the gateway's internal finish_reason vocabulary.
 _FINISH_REASON_MAP = {
@@ -348,13 +376,38 @@ class MessageCodec:
         try:
             if parser_backend == "sglang":
                 sglang_name = _SGLANG_TOOL_PARSER_ALIASES.get(parser_name, parser_name)
-                return self._process_tool_calls_sglang(text, tools, sglang_name)
-            if parser_backend == "vllm":
+                parsed_content, function_calls = self._process_tool_calls_sglang(text, tools, sglang_name)
+                resolved_parser = sglang_name
+            elif parser_backend == "vllm":
                 vllm_name = _VLLM_TOOL_PARSER_ALIASES.get(parser_name, parser_name)
-                return self._process_tool_calls_vllm(text, tools, vllm_name)
-            return await self._process_tool_calls_verl(response_ids, tools, parser_name)
+                parsed_content, function_calls = self._process_tool_calls_vllm(text, tools, vllm_name)
+                resolved_parser = vllm_name
+            else:
+                parsed_content, function_calls = await self._process_tool_calls_verl(response_ids, tools, parser_name)
+                resolved_parser = parser_name
         except Exception as exc:
+            logger.exception(
+                "tool parser failed: backend=%s parser=%s response_tokens=%d raw_tail=%r",
+                parser_backend,
+                parser_name,
+                len(response_ids),
+                _debug_text(text),
+            )
             raise RuntimeError(f"{parser_backend} tool parser {parser_name!r} failed") from exc
+
+        logger.info(
+            "tool parse result: backend=%s parser=%s requested_parser=%s response_tokens=%d "
+            "declared_tools=%s function_calls=%s parsed_content_tail=%r raw_tail=%r",
+            parser_backend,
+            resolved_parser,
+            parser_name,
+            len(response_ids),
+            [tool.get("function", {}).get("name") for tool in tools],
+            _debug_tool_calls(function_calls),
+            _debug_text(parsed_content),
+            _debug_text(text),
+        )
+        return parsed_content, function_calls
 
     async def decode_response(
         self,
@@ -387,9 +440,19 @@ class MessageCodec:
                     "content": content or "",
                     "tool_calls": tool_calls,
                 }
+                logger.info(
+                    "decode response: finish=tool_calls tool_calls=%s content_tail=%r",
+                    _debug_text(tool_calls),
+                    _debug_text(content or ""),
+                )
                 return message, "tool_calls"
         response_text = self._tokenizer.decode(response_ids, skip_special_tokens=True)
         finish_reason = _FINISH_REASON_MAP.get(stop_reason, stop_reason) if stop_reason else "stop"
+        logger.info(
+            "decode response: finish=%s tool_calls=[] content_tail=%r",
+            finish_reason,
+            _debug_text(response_text),
+        )
         return {"role": "assistant", "content": response_text}, finish_reason
 
     def canonicalize_message_for_prefix_comparison(self, message: dict[str, Any]) -> dict[str, Any]:
