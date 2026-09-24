@@ -108,6 +108,47 @@ class ClaudeCodeAgent(Agent):
         messages: list[dict[str, Any]],
         workdir: str | None = None,
     ) -> AgentResult:
+        return await self._run_cli(sandbox=sandbox, messages=messages, workdir=workdir)
+
+    async def run_session(
+        self,
+        *,
+        sandbox: Sandbox,
+        messages: list[dict[str, Any]],
+        session_id: str,
+        workdir: str | None = None,
+    ) -> AgentResult:
+        """Start a named Claude conversation that can be resumed after artifact checks."""
+        return await self._run_cli(
+            sandbox=sandbox, messages=messages, workdir=workdir, session_id=session_id
+        )
+
+    async def resume_session(
+        self,
+        *,
+        sandbox: Sandbox,
+        prompt: str,
+        session_id: str,
+        workdir: str | None = None,
+    ) -> AgentResult:
+        """Continue the exact conversation, not the most recent unrelated session."""
+        return await self._run_cli(
+            sandbox=sandbox,
+            messages=[{"role": "user", "content": prompt}],
+            workdir=workdir,
+            session_id=session_id,
+            resume=True,
+        )
+
+    async def _run_cli(
+        self,
+        *,
+        sandbox: Sandbox,
+        messages: list[dict[str, Any]],
+        workdir: str | None = None,
+        session_id: str | None = None,
+        resume: bool = False,
+    ) -> AgentResult:
         cfg: ClaudeCodeConfig = self.config  # type: ignore[assignment]
         base_url = cfg.model.base_url
         if not base_url:
@@ -126,7 +167,7 @@ class ClaudeCodeAgent(Agent):
         # Point claude at the Anthropic endpoint (gateway session or vLLM) and run it.
         endpoint = _strip_v1(base_url)
         model = cfg.model.model_name
-        argv = self._claude_argv(user_prompt)
+        argv = self._claude_argv(user_prompt, session_id=session_id, resume=resume)
         env = self._claude_env(endpoint)
         # Keep the effective route visible in framework logs.  Do not log the
         # auth token or prompt: this is only to distinguish a per-session
@@ -148,7 +189,12 @@ class ClaudeCodeAgent(Agent):
             logger.info("claude_code: claude finished (exit 0)\n--- stdout (tail) ---\n%s", out_tail)
 
         return AgentResult(
-            info={"exit_code": proc.exit_code, "stdout_tail": out_tail, "stderr_tail": err_tail},
+            info={
+                "exit_code": proc.exit_code,
+                "stdout_tail": out_tail,
+                "stderr_tail": err_tail,
+                **({"claude_session_id": session_id} if session_id else {}),
+            },
             finished=proc.exit_code == 0,
         )
 
@@ -171,7 +217,9 @@ class ClaudeCodeAgent(Agent):
             raise RuntimeError("claude_code: installation finished but claude is not available on PATH")
         logger.info("claude_code: installation completed")
 
-    def _claude_argv(self, user_prompt: str) -> list[str]:
+    def _claude_argv(
+        self, user_prompt: str, *, session_id: str | None = None, resume: bool = False
+    ) -> list[str]:
         cfg: ClaudeCodeConfig = self.config  # type: ignore[assignment]
         model = cfg.model.model_name
         if not model:
@@ -185,6 +233,10 @@ class ClaudeCodeAgent(Agent):
             "--permission-mode",
             cfg.permission_mode,
         ]
+        if resume and not session_id:
+            raise ValueError("claude_code: resume requires an explicit session_id")
+        if session_id:
+            argv += ["--resume" if resume else "--session-id", session_id]
         if cfg.disable_slash_commands:
             argv.append("--disable-slash-commands")
         if cfg.allowed_tools:

@@ -48,7 +48,7 @@ python3 examples/inference/parallel_infer_verl.py \
   --served-model-name glm-5.2 \
   --task-config examples/ascend_triton/task_config_claude_code.yaml \
   --engine vllm \
-  --tool-parser hermes \
+  --tool-parser qwen3_xml \
   --nnodes 1 \
   --n-gpus-per-node 1 \
   --tensor-parallel-size 1 \
@@ -104,13 +104,18 @@ checkpoint is selected by `--model-path`. In the current resident-router setup,
 `glm-5.2` is the alias that reached the Gateway without the `Model not exist`
 400 seen with `Qwen3-0.6B` and `claude-sonnet-4-5`. It is therefore valid for
 the smoke even when `--model-path` points to Qwen3-0.6B; the parser must still
-follow the actual checkpoint (`hermes` for the standard Qwen3 JSON tool-call
-template). Prefer the exact ID returned by the
+follow the actual output. Recent resident-container smoke runs emitted
+`<function=...><parameter=...>` calls, so the command above uses `qwen3_xml`.
+If the checkpoint/template instead emits JSON inside `<tool_call>`, use `hermes`.
+Prefer the exact ID returned by the
 router's `/v1/models` if that endpoint is available.
 
-The smoke passes when the summary reports `1 / 1` scored session and
-`result.json` has one score. `reward=0` is a valid model outcome. Inspect
-`<log-dir>/<session-id>/task.log` for the final KernelGYM status and the
+`1 / 1` scored sessions only means the rollout produced a score; it does not
+prove that a kernel was written or evaluated. The example config resumes the
+same Claude conversation once when a clean exit leaves `output/kernel_code.py`
+missing (`missing_kernel_retries: 1`). If the file is still missing, the task
+returns `finished=False` and reward 0. Check `task.log` for the final KernelGYM
+status, or an explicit `produced no kernel_code.py` message, and inspect
 matching `framework.log`, `trajectory.json`, and `trajectory.npz`. For the first investigation, set
 `cleanup_episode: false` in `task_config_claude_code.yaml` to retain the
 task-owned candidate files, then restore it before multi-episode runs.

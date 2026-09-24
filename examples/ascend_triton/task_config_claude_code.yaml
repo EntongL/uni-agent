@@ -31,6 +31,9 @@
   evaluation_timeout: 900
   evaluation_poll_interval: 2
   cleanup_episode: true
+  # A clean CLI exit without output/kernel_code.py is not task completion.
+  # Resume the same Claude conversation once with an artifact-focused prompt.
+  missing_kernel_retries: 1
 
   agent:
     name: claude_code
@@ -55,13 +58,13 @@
     extra_args:
       - --debug-file
       - /tmp/uni-agent-claude-debug.log
-    max_turns: 12
+    max_turns: 32
     run_timeout: 3600
     extra_env:
       KERNELGYM_SERVER_URL: http://10.1.30.41:19001
       KERNELGYM_TOOLKIT: sandbox_v3
       MAX_SMOKE: "2"
-      MAX_TURNS: "12"
+      MAX_TURNS: "32"
       # GLM-5.2 has a 1M-token context window but Claude Code does not know
       # third-party model aliases by default.
       CLAUDE_CODE_MAX_CONTEXT_TOKENS: "1048576"
@@ -76,6 +79,9 @@
         Generate a correct Ascend Triton implementation for the following PyTorch operator.
         Preserve the reference Model interface and behavior. The implementation must
         define Model in OUTPUT_DIR/kernel_code.py.
+        Create the final file before ending the session. A plan or sketch alone is
+        not a completed task; after each design step, continue through coding and
+        confirm OUTPUT_DIR/kernel_code.py exists.
 
         Reference implementation:
         {operator_src}

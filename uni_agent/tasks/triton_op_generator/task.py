@@ -12,6 +12,8 @@ from typing import Any
 
 from pydantic import Field, field_validator
 
+from uni_agent.agents.claude_code.agent import ClaudeCodeAgent
+
 from ..base import Task, TaskConfig, TaskResult
 from ..registry import register_task
 from .reward import score_kernelgym_result
@@ -57,6 +59,12 @@ class TritonOpGeneratorTaskConfig(TaskConfig):
     cleanup_episode: bool = Field(
         default=True,
         description="Remove only the task-owned episode directory when the run ends.",
+    )
+    missing_kernel_retries: int = Field(
+        default=0,
+        ge=0,
+        le=3,
+        description="Resume Claude Code this many times if it exits successfully without writing kernel_code.py.",
     )
 
     @field_validator("agent_workdir", "episode_root")
@@ -110,6 +118,7 @@ class TritonOpGeneratorTask(Task):
                     cfg=cfg,
                     reference_path=reference_path,
                     output_dir=output_dir,
+                    kernel_path=kernel_path,
                 )
 
                 kernel_exists = await self._file_exists(sandbox, kernel_path)
@@ -119,7 +128,7 @@ class TritonOpGeneratorTask(Task):
                     return TaskResult(
                         reward=0.0,
                         accuracy=0.0,
-                        finished=agent_result.finished if agent_result is not None else False,
+                        finished=False,
                         extra_info={
                             "instance_id": instance_id,
                             "resolved": False,
@@ -130,6 +139,11 @@ class TritonOpGeneratorTask(Task):
                         },
                     )
 
+                logger.info(
+                    "Triton operator task %s produced %s; running final KernelGYM evaluation",
+                    instance_id,
+                    kernel_path,
+                )
                 # The reference is model-visible during the episode. Restore the frozen
                 # source before final scoring so edits to it cannot alter the reward.
                 await sandbox.write_file(reference_path, operator_src)
@@ -177,15 +191,65 @@ class TritonOpGeneratorTask(Task):
             raise RuntimeError(f"failed to create task episode directory {episode_dir!r}: {prepared.stderr.strip()}")
         await sandbox.write_file(reference_path, operator_src)
 
-    async def _run_agent(self, *, sandbox, cfg: TritonOpGeneratorTaskConfig, reference_path: str, output_dir: str):
+    async def _run_agent(
+        self,
+        *,
+        sandbox,
+        cfg: TritonOpGeneratorTaskConfig,
+        reference_path: str,
+        output_dir: str,
+        kernel_path: str,
+    ):
         messages = self._messages_with_runtime_paths(cfg.prompt, reference_path=reference_path, output_dir=output_dir)
         agent = self.build_agent()
+        if cfg.missing_kernel_retries and not isinstance(agent, ClaudeCodeAgent):
+            raise ValueError("missing_kernel_retries requires the claude_code agent")
+        claude_session_id = str(uuid.uuid4()) if cfg.missing_kernel_retries else None
+        attempts: list[dict[str, Any]] = []
         try:
-            agent_result = await agent.run(sandbox=sandbox, messages=messages, workdir=cfg.agent_workdir)
+            if claude_session_id is None:
+                agent_result = await agent.run(sandbox=sandbox, messages=messages, workdir=cfg.agent_workdir)
+            else:
+                agent_result = await agent.run_session(
+                    sandbox=sandbox,
+                    messages=messages,
+                    session_id=claude_session_id,
+                    workdir=cfg.agent_workdir,
+                )
+            attempts.append({"stage": "initial", **agent_result.info})
+            for attempt in range(1, cfg.missing_kernel_retries + 1):
+                if not agent_result.finished or await self._file_exists(sandbox, kernel_path):
+                    break
+                logger.warning(
+                    "Triton operator task: Claude exited without %s; resuming session %s (%d/%d)",
+                    kernel_path,
+                    claude_session_id,
+                    attempt,
+                    cfg.missing_kernel_retries,
+                )
+                agent_result = await agent.resume_session(
+                    sandbox=sandbox,
+                    prompt=self._missing_kernel_prompt(reference_path, kernel_path),
+                    session_id=claude_session_id,
+                    workdir=cfg.agent_workdir,
+                )
+                attempts.append({"stage": f"continuation_{attempt}", **agent_result.info})
         except Exception as exc:
             logger.exception("Triton operator agent failed before final evaluation")
-            return None, {"error": f"{type(exc).__name__}: {exc}"}
-        return agent_result, {"error": None, **agent_result.info}
+            return None, {"error": f"{type(exc).__name__}: {exc}", "attempts": attempts}
+        return agent_result, {"error": None, **agent_result.info, "attempts": attempts}
+
+    @staticmethod
+    def _missing_kernel_prompt(reference_path: str, kernel_path: str) -> str:
+        return (
+            "The previous turn ended before the required final artifact was written. "
+            f"The file {kernel_path} does not exist. Continue this same task now: "
+            "use the packaged triton-op-coding workflow and write a valid Triton-Ascend "
+            f"implementation defining Model to {kernel_path}. The reference at "
+            f"{reference_path} is immutable; reuse your existing sketch if useful. "
+            "Do not stop after describing the next step. Confirm the file exists before finishing. "
+            "Use KernelGYM for evaluation; do not run verify.py or benchmark.py."
+        )
 
     @staticmethod
     def _messages_with_runtime_paths(

@@ -296,6 +296,43 @@ def test_claude_argv_can_keep_slash_commands_enabled():
 
 @pytest.mark.cpu
 @pytest.mark.level0
+def test_claude_named_session_can_be_resumed_without_selecting_another_session():
+    config = ClaudeCodeConfig(
+        model=ModelConfig(base_url="http://gateway:8000/v1", model_name="policy"),
+    )
+    sandbox = _FakeSandbox(probe_results=[0, 0])
+    agent = ClaudeCodeAgent(config)
+    session_id = "550e8400-e29b-41d4-a716-446655440000"
+
+    first = asyncio.run(
+        agent.run_session(
+            sandbox=sandbox,
+            messages=[{"role": "user", "content": "write the kernel"}],
+            session_id=session_id,
+            workdir="/testbed",
+        )
+    )
+    second = asyncio.run(
+        agent.resume_session(
+            sandbox=sandbox,
+            prompt="finish the kernel file",
+            session_id=session_id,
+            workdir="/testbed",
+        )
+    )
+
+    first_argv = sandbox.exec_calls[0]["argv"]
+    second_argv = sandbox.exec_calls[1]["argv"]
+    assert first_argv[first_argv.index("--session-id") + 1] == session_id
+    assert second_argv[second_argv.index("--resume") + 1] == session_id
+    assert "--continue" not in second_argv
+    assert second_argv[2] == "finish the kernel file"
+    assert first.info["claude_session_id"] == session_id
+    assert second.info["claude_session_id"] == session_id
+
+
+@pytest.mark.cpu
+@pytest.mark.level0
 def test_run_reports_nonzero_process_exit():
     config = ClaudeCodeConfig(
         model=ModelConfig(base_url="http://gateway:8000/v1", model_name="policy"),
