@@ -110,6 +110,15 @@ If the checkpoint/template instead emits JSON inside `<tool_call>`, use `hermes`
 Prefer the exact ID returned by the
 router's `/v1/models` if that endpoint is available.
 
+The example's Claude Code context/output limits are for the Qwen3-0.6B smoke
+checkpoint: `CLAUDE_CODE_MAX_CONTEXT_TOKENS=40960` and
+`CLAUDE_CODE_MAX_OUTPUT_TOKENS=8192`. Change them to match the actual
+`--model-path` when switching checkpoints. Do not size Claude's context from
+the `glm-5.2` alias: claiming a 1M-token window for Qwen3-0.6B stops timely
+compaction. If Claude reports an output-token-limit error, the Gateway actor
+now logs the actual `prompt_tokens`, `output_tokens`, requested/effective
+`max_tokens`, and trajectory capacity at WARNING level.
+
 `1 / 1` scored sessions only means the rollout produced a score; it does not
 prove that a kernel was written or evaluated. The example config resumes the
 same Claude conversation once when a clean exit leaves `output/kernel_code.py`

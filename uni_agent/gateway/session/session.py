@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import time
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -17,6 +18,7 @@ from uni_agent.gateway.session.types import InternalGenerationRequest, SessionHa
 from uni_agent.rl_insight.adapter import start_generation_span
 
 _EMPTY_PREFIX_HASH = hashlib.sha256(b"uni-agent-prefix-v1\0empty").hexdigest()
+logger = logging.getLogger(__name__)
 
 
 class SessionPhase(str, Enum):
@@ -247,6 +249,13 @@ class GatewaySession:
                 # backend generation runs outside the session lock.
                 encoded = await self._prepare_generation_inputs(request)
                 if encoded.capacity_exhausted:
+                    logger.warning(
+                        "Gateway session %s trajectory capacity exhausted before generation: "
+                        "context_tokens=%d capacity=%s output_tokens=0",
+                        self.handle.session_id,
+                        len(encoded.context_ids),
+                        self._trajectory_capacity,
+                    )
                     empty_msg = {"role": "assistant", "content": ""}
                     if encoded.chain_id is not None:
                         self._close_length_exhausted_chain(encoded)
@@ -335,6 +344,19 @@ class GatewaySession:
                     tools=encoded.tools,
                     stop_reason=output.stop_reason,
                 )
+                if finish_reason == "length":
+                    logger.warning(
+                        "Gateway session %s response truncated: backend_stop_reason=%s "
+                        "prompt_tokens=%d output_tokens=%d requested_max_tokens=%s "
+                        "effective_max_tokens=%s trajectory_capacity=%s",
+                        self.handle.session_id,
+                        output.stop_reason,
+                        len(encoded.context_ids),
+                        len(response_ids),
+                        (request.get("sampling_params") or {}).get("max_tokens"),
+                        encoded.sampling_params.get("max_tokens"),
+                        self._trajectory_capacity,
+                    )
                 chain_id = self._commit_generation_to_chain(encoded, assistant_msg)
                 if reserved_chain_id is not None:
                     self.reserved_chain_ids.discard(reserved_chain_id)

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -1052,7 +1053,7 @@ async def test_multiple_chains_length_exhaustion_closes_selected_chain_and_order
 @pytest.mark.cpu
 @pytest.mark.level0
 @pytest.mark.asyncio
-async def test_multiple_chains_exactly_exhausted_chain_closes_without_backend_call():
+async def test_multiple_chains_exactly_exhausted_chain_closes_without_backend_call(caplog):
     """Close an exhausted chain even when the repeated request has no incremental tail."""
     first_messages = [{"role": "user", "content": "fill the response budget"}]
     session = _session(
@@ -1067,7 +1068,8 @@ async def test_multiple_chains_exactly_exhausted_chain_closes_without_backend_ca
     ]
 
     await _run(session, backend, first_messages)
-    outcome = await _run(session, backend, repeated_history)
+    with caplog.at_level(logging.WARNING, logger="uni_agent.gateway.session.session"):
+        outcome = await _run(session, backend, repeated_history)
     trajectories = await session.finalize()
 
     assert outcome.finish_reason == "length"
@@ -1075,6 +1077,35 @@ async def test_multiple_chains_exactly_exhausted_chain_closes_without_backend_ca
     assert backend.steps == ["SHOULD_NOT_RUN"]
     assert len(trajectories) == 1
     assert trajectories[0].extra_fields["materialization_reason"] == "max_trajectory_length"
+    assert "trajectory capacity exhausted before generation" in caplog.text
+    assert "output_tokens=0" in caplog.text
+
+
+@pytest.mark.cpu
+@pytest.mark.level0
+@pytest.mark.asyncio
+async def test_gateway_logs_actual_tokens_when_backend_reports_length(caplog):
+    class LengthBackend(SequencedBackend):
+        async def generate(self, request_id, **kwargs):
+            output = await super().generate(request_id, **kwargs)
+            return TokenOutput(
+                token_ids=output.token_ids,
+                log_probs=output.log_probs,
+                stop_reason="length",
+            )
+
+    messages = [{"role": "user", "content": "short"}]
+    session = _session("length-diagnostics", prompt_length=_prompt_length(messages), response_length=10)
+    backend = LengthBackend(["ABC"])
+
+    with caplog.at_level(logging.WARNING, logger="uni_agent.gateway.session.session"):
+        outcome = await _run(session, backend, messages, max_tokens=8)
+
+    assert outcome.finish_reason == "length"
+    assert "Gateway session length-diagnostics response truncated" in caplog.text
+    assert "output_tokens=3" in caplog.text
+    assert "requested_max_tokens=8" in caplog.text
+    assert "effective_max_tokens=8" in caplog.text
 
 
 @pytest.mark.cpu
