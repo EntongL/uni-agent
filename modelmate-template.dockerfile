@@ -34,6 +34,7 @@ USER root
 RUN sh /home/pre_execution_by_root.sh
 
 # 构建前需把现有 venv 复制到构建上下文：
+# 目标目录必须不存在，否则重复 cp -a 会产生 venv/venv 的整份副本。
 # cp -a /home/naie/work/lib/py/venv /home/naie/work/docker/venv
 # pre_execution_by_root.sh 已创建 naie 用户，此时可按用户名设置属主。
 COPY --chown=naie:naie venv/ /home/naie/work/lib/py/venv/
@@ -97,9 +98,6 @@ RUN if ! command -v patch >/dev/null 2>&1; then \
     fi && \
     command -v patch && patch --version | head -n 1 && \
     rm -f /tmp/patch.rpm
-
-# 确保复制进镜像的 venv 可由平台用户读取和继续 pip install。
-RUN chown -R "$NB_USER:$NB_GROUP" "$USER_PYTHON3_HOME"
 
 # 业务能力 DIY 区域↑
 
