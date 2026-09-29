@@ -89,16 +89,14 @@ RUN source /home/$NB_USER/.bashrc && sh /home/install/pre_execution_by_naie.sh
 # 业务能力 DIY 区域↓
 USER root
 
-# Notebook 运行时 naie 用户没有 yum 权限；openEuler 镜像构建阶段以 root 安装 patch。
-RUN if command -v dnf >/dev/null 2>&1; then \
-      dnf install -y patch && dnf clean all; \
-    elif command -v yum >/dev/null 2>&1; then \
-      yum install -y patch && yum clean all; \
-    else \
-      echo "ERROR: openEuler base image has neither dnf nor yum" >&2; \
-      exit 1; \
+# Build nodes may not resolve the public openEuler repositories. Place the matching
+# openEuler 24.03 LTS-SP3 aarch64 RPM beside this Dockerfile as patch.rpm.
+COPY patch.rpm /tmp/patch.rpm
+RUN if ! command -v patch >/dev/null 2>&1; then \
+      rpm -Uvh /tmp/patch.rpm; \
     fi && \
-    command -v patch && patch --version | head -n 1
+    command -v patch && patch --version | head -n 1 && \
+    rm -f /tmp/patch.rpm
 
 # 确保复制进镜像的 venv 可由平台用户读取和继续 pip install。
 RUN chown -R "$NB_USER:$NB_GROUP" "$USER_PYTHON3_HOME"
