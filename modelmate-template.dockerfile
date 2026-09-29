@@ -1,6 +1,8 @@
-# 使用前必须替换为当前 Notebook 对应的基础镜像地址。
+# openEuler 24.03 LTS-SP3 版本。
+# 基础镜像必须包含
+# /usr/local/python3.12.13/bin/python3.12，否则复制过来的 venv 无法启动。
 # 若基础镜像是私有镜像，请先按平台文档推送到 ModelMate 镜像仓库。
-FROM registry.fusionstage.local:20202/naie_2002/REPLACE_IMAGE:REPLACE_TAG
+FROM registry.fusionstage.local:20202/naie_2002/cann:9.1.0
 
 # 平台模板中的 source 和 [[ ... ]] 需要 bash。
 SHELL ["/bin/bash", "-c"]
@@ -15,6 +17,7 @@ ENV INSTALLATION_MODE=online
 # 使用当前 Notebook 中已创建的 Python 3.12 venv。
 ENV USER_PYTHON3_HOME=/home/naie/work/lib/py/venv
 ENV USER_PYTHON_PKG_PATH=/home/naie/work/lib/py/venv/lib/python3.12/site-packages
+ENV VENV_BASE_PYTHON=/usr/local/python3.12.13/bin/python3.12
 
 # 使用平台服务时，全部为 naie 用户。
 ENV NB_USER=naie
@@ -36,10 +39,14 @@ RUN sh /home/pre_execution_by_root.sh
 COPY --chown=naie:naie venv/ /home/naie/work/lib/py/venv/
 
 # 尽早确认该 venv 与所选基础镜像兼容，避免到 Notebook 启动阶段才暴露问题。
-RUN test -x "$USER_PYTHON3_HOME/bin/python" && \
+RUN test -x "$VENV_BASE_PYTHON" || { \
+      echo "ERROR: base image is missing $VENV_BASE_PYTHON" >&2; \
+      exit 1; \
+    }; \
+    test -x "$USER_PYTHON3_HOME/bin/python" && \
     test -d "$USER_PYTHON_PKG_PATH" && \
     "$USER_PYTHON3_HOME/bin/python" -c \
-      'import sys; assert sys.version_info[:2] == (3, 12), sys.version; print(sys.executable, sys.version)'
+      'import sys; assert sys.version_info[:3] == (3, 12, 13), sys.version; print(sys.executable, sys.version)'
 
 RUN echo "====================The value of USER_PYTHON3_HOME is $USER_PYTHON3_HOME" && \
     if [ ! -e "$USER_PYTHON3_HOME/bin/python" ] && [ -e "$USER_PYTHON3_HOME/bin/python3" ]; then \
@@ -82,20 +89,13 @@ RUN source /home/$NB_USER/.bashrc && sh /home/install/pre_execution_by_naie.sh
 # 业务能力 DIY 区域↓
 USER root
 
-# Notebook 运行时 naie 用户没有 yum 权限；镜像构建阶段以 root 安装 patch。
-# 同时兼容常见的 yum/dnf/microdnf/apt 基础镜像。
+# Notebook 运行时 naie 用户没有 yum 权限；openEuler 镜像构建阶段以 root 安装 patch。
 RUN if command -v dnf >/dev/null 2>&1; then \
       dnf install -y patch && dnf clean all; \
     elif command -v yum >/dev/null 2>&1; then \
       yum install -y patch && yum clean all; \
-    elif command -v microdnf >/dev/null 2>&1; then \
-      microdnf install -y patch && microdnf clean all; \
-    elif command -v apt-get >/dev/null 2>&1; then \
-      apt-get update && \
-      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends patch && \
-      rm -rf /var/lib/apt/lists/*; \
     else \
-      echo "ERROR: no supported package manager found; cannot install patch" >&2; \
+      echo "ERROR: openEuler base image has neither dnf nor yum" >&2; \
       exit 1; \
     fi && \
     command -v patch && patch --version | head -n 1
