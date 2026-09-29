@@ -112,12 +112,15 @@ router's `/v1/models` if that endpoint is available.
 
 The example's Claude Code context/output limits are for the Qwen3-0.6B smoke
 checkpoint: `CLAUDE_CODE_MAX_CONTEXT_TOKENS=40960` and
-`CLAUDE_CODE_MAX_OUTPUT_TOKENS=8192`. Change them to match the actual
-`--model-path` when switching checkpoints. Do not size Claude's context from
-the `glm-5.2` alias: claiming a 1M-token window for Qwen3-0.6B stops timely
-compaction. If Claude reports an output-token-limit error, the Gateway actor
-now logs the actual `prompt_tokens`, `output_tokens`, requested/effective
-`max_tokens`, and trajectory capacity at WARNING level.
+`CLAUDE_CODE_MAX_OUTPUT_TOKENS=4096` and
+`CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS=4096`. It also enables
+`CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT=1`, which reduces system/tool-schema overhead
+while keeping the skills and tools available. Change the context/output limits
+to match the actual `--model-path` when switching checkpoints. Do not size
+Claude's context from the `glm-5.2` alias: claiming a 1M-token window for
+Qwen3-0.6B stops timely compaction. If Claude reports an output-token-limit
+error, the Gateway actor now logs the actual `prompt_tokens`, `output_tokens`,
+requested/effective `max_tokens`, and trajectory capacity at WARNING level.
 
 `1 / 1` scored sessions only means the rollout produced a score; it does not
 prove that a kernel was written or evaluated. The example config resumes the
