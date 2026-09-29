@@ -115,12 +115,36 @@ checkpoint: `CLAUDE_CODE_MAX_CONTEXT_TOKENS=40960` and
 `CLAUDE_CODE_MAX_OUTPUT_TOKENS=4096` and
 `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS=4096`. It also enables
 `CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT=1`, which reduces system/tool-schema overhead
-while keeping the skills and tools available. Change the context/output limits
-to match the actual `--model-path` when switching checkpoints. Do not size
-Claude's context from the `glm-5.2` alias: claiming a 1M-token window for
-Qwen3-0.6B stops timely compaction. If Claude reports an output-token-limit
-error, the Gateway actor now logs the actual `prompt_tokens`, `output_tokens`,
-requested/effective `max_tokens`, and trajectory capacity at WARNING level.
+while keeping the skills and tools available. The config also sets
+`CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1` for the custom
+`glm-5.2` route. This disables Claude Code's proactive compaction for an
+unrecognized model ID; it does not increase the checkpoint's real context or
+the Gateway trajectory budget. When an Anthropic-format request reaches the
+Gateway trajectory limit, the Gateway now returns a recognizable `Prompt is
+too long` error so Claude Code can compact and retry.
+
+Set `CLAUDE_CODE_MAX_CONTEXT_TOKENS` to the actual `--model-path` context, and
+set `agent.model.max_total_tokens` so the Gateway's trajectory budget
+(`4096 + max_total_tokens` in this inference recipe) matches the intended
+rollout length. The sample values `4096 + 36864 = 40960` match the Qwen3-0.6B
+smoke checkpoint. The `glm-5.2` served-model alias does not determine either
+limit. In a training job, the Gateway instead uses the rollout's configured
+`prompt_length + response_length`; changing this task YAML does not enlarge a
+training rollout. Keep that sum aligned with the actual vLLM `max_model_len`.
+In the resident container, inspect the effective Claude window with:
+
+```bash
+docker exec uni-agent-resident sh -lc \
+  'grep -E "autocompact:.*effectiveWindow|rapid-refill breaker" /tmp/uni-agent-claude-debug.log | tail -n 30'
+```
+
+The task log now prints the context settings passed to Claude Code. If Claude
+still exits with `Autocompact is thrashing`, the example starts one fresh
+coding-stage session rather than resuming the saturated conversation. The
+prompt asks Claude to write its first candidate before evaluation. If Claude
+reports an output-token-limit error, the Gateway
+actor logs the actual `prompt_tokens`, `output_tokens`, requested/effective
+`max_tokens`, and trajectory capacity at WARNING level.
 
 `1 / 1` scored sessions only means the rollout produced a score; it does not
 prove that a kernel was written or evaluated. The example config resumes the

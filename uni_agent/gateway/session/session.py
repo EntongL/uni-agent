@@ -161,12 +161,15 @@ class GenerationOutcome:
         finish_reason: Finish reason returned to the actor for serialization.
         prompt_tokens: Number of context tokens sent to the backend.
         completion_tokens: Number of generated response tokens.
+        capacity_exhausted: Whether the Gateway rejected generation at the
+            trajectory limit before sending a backend request.
     """
 
     assistant_msg: dict[str, Any]
     finish_reason: str
     prompt_tokens: int
     completion_tokens: int
+    capacity_exhausted: bool = False
 
 
 class GatewaySession:
@@ -269,6 +272,7 @@ class GatewaySession:
                         finish_reason="length",
                         prompt_tokens=len(encoded.context_ids),
                         completion_tokens=0,
+                        capacity_exhausted=True,
                     )
                 if encoded.chain_id is not None:
                     self.reserved_chain_ids.add(encoded.chain_id)

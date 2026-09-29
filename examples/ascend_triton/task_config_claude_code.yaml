@@ -34,6 +34,9 @@
   # A clean CLI exit without output/kernel_code.py is not task completion.
   # Resume the same Claude conversation once with an artifact-focused prompt.
   missing_kernel_retries: 1
+  # Claude Code may abort after three rapid compactions while loading this
+  # workflow's skills. Retry the coding stage in a fresh conversation once.
+  context_recovery_retries: 1
 
   agent:
     name: claude_code
@@ -69,6 +72,10 @@
       # Qwen3-0.6B has max_position_embeddings=40960. A fake 1M window
       # prevents Claude Code from compacting before the backend runs out.
       CLAUDE_CODE_MAX_CONTEXT_TOKENS: "40960"
+      # For the custom glm-5.2 route, defer compaction until the backend
+      # rejects an overlong request. This avoids Claude Code's rapid-refill
+      # breaker while the packaged skills are being loaded.
+      CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT: "1"
       # Reserve more of the 40K checkpoint's context for the prompt, tool schemas,
       # and the kernelgen skills. Increase only for checkpoints with larger windows.
       CLAUDE_CODE_MAX_OUTPUT_TOKENS: "4096"
@@ -79,7 +86,9 @@
     model:
       temperature: 0.7
       top_p: 0.8
-      max_total_tokens: 32768
+      # In parallel_infer_verl.py the Gateway also reserves 4096 prompt tokens.
+      # 4096 + 36864 equals the 40960-token Qwen3-0.6B smoke window.
+      max_total_tokens: 36864
 
   prompt_template:
     - role: user
@@ -87,9 +96,9 @@
         Generate a correct Ascend Triton implementation for the following PyTorch operator.
         Preserve the reference Model interface and behavior. The implementation must
         define Model in OUTPUT_DIR/kernel_code.py.
-        Create the final file before ending the session. A plan or sketch alone is
-        not a completed task; after each design step, continue through coding and
-        confirm OUTPUT_DIR/kernel_code.py exists.
+        Write a runnable first candidate to OUTPUT_DIR/kernel_code.py as soon as
+        the essential workflow instructions are loaded. Then evaluate and improve
+        it. A plan or sketch alone is not a completed task; confirm the file exists.
 
         Reference implementation:
         {operator_src}

@@ -66,6 +66,12 @@ class TritonOpGeneratorTaskConfig(TaskConfig):
         le=3,
         description="Resume Claude Code this many times if it exits successfully without writing kernel_code.py.",
     )
+    context_recovery_retries: int = Field(
+        default=0,
+        ge=0,
+        le=2,
+        description="Start a fresh Claude Code coding session after a context exhaustion exit.",
+    )
 
     @field_validator("agent_workdir", "episode_root")
     @classmethod
@@ -202,8 +208,10 @@ class TritonOpGeneratorTask(Task):
     ):
         messages = self._messages_with_runtime_paths(cfg.prompt, reference_path=reference_path, output_dir=output_dir)
         agent = self.build_agent()
-        if cfg.missing_kernel_retries and not isinstance(agent, ClaudeCodeAgent):
-            raise ValueError("missing_kernel_retries requires the claude_code agent")
+        if (cfg.missing_kernel_retries or cfg.context_recovery_retries) and not isinstance(
+            agent, ClaudeCodeAgent
+        ):
+            raise ValueError("Claude Code recovery retries require the claude_code agent")
         claude_session_id = str(uuid.uuid4()) if cfg.missing_kernel_retries else None
         attempts: list[dict[str, Any]] = []
         try:
@@ -217,6 +225,35 @@ class TritonOpGeneratorTask(Task):
                     workdir=cfg.agent_workdir,
                 )
             attempts.append({"stage": "initial", **agent_result.info})
+            for attempt in range(1, cfg.context_recovery_retries + 1):
+                if agent_result.finished or await self._file_exists(sandbox, kernel_path):
+                    break
+                output = f"{agent_result.info.get('stdout_tail', '')}\n{agent_result.info.get('stderr_tail', '')}"
+                if not any(
+                    marker in output for marker in ("Autocompact is thrashing:", "Prompt is too long")
+                ):
+                    break
+                logger.warning(
+                    "Triton operator task: Claude context exhausted; starting fresh coding session (%d/%d)",
+                    attempt,
+                    cfg.context_recovery_retries,
+                )
+                recovery_messages = [
+                    {"role": "user", "content": self._context_thrash_prompt(reference_path, kernel_path)}
+                ]
+                claude_session_id = str(uuid.uuid4()) if cfg.missing_kernel_retries else None
+                if claude_session_id is None:
+                    agent_result = await agent.run(
+                        sandbox=sandbox, messages=recovery_messages, workdir=cfg.agent_workdir
+                    )
+                else:
+                    agent_result = await agent.run_session(
+                        sandbox=sandbox,
+                        messages=recovery_messages,
+                        session_id=claude_session_id,
+                        workdir=cfg.agent_workdir,
+                    )
+                attempts.append({"stage": f"context_thrash_recovery_{attempt}", **agent_result.info})
             for attempt in range(1, cfg.missing_kernel_retries + 1):
                 if not agent_result.finished or await self._file_exists(sandbox, kernel_path):
                     break
@@ -238,6 +275,19 @@ class TritonOpGeneratorTask(Task):
             logger.exception("Triton operator agent failed before final evaluation")
             return None, {"error": f"{type(exc).__name__}: {exc}", "attempts": attempts}
         return agent_result, {"error": None, **agent_result.info, "attempts": attempts}
+
+    @staticmethod
+    def _context_thrash_prompt(reference_path: str, kernel_path: str) -> str:
+        return (
+            "A previous Claude session loaded the packaged Triton workflow but stopped "
+            "at its context limit. Start a fresh coding stage. Read the immutable "
+            f"PyTorch reference at {reference_path}, invoke the installed triton-op-coding "
+            "skill once, and immediately write a runnable Ascend Triton implementation "
+            f"defining Model to {kernel_path}. Keep file reads and tool output small; "
+            "only load another skill if the coding skill requires it. After the file exists, "
+            "use KernelGYM for evaluation and improve it if needed. Do not run verify.py "
+            "or benchmark.py. Confirm kernel_code.py exists before finishing."
+        )
 
     @staticmethod
     def _missing_kernel_prompt(reference_path: str, kernel_path: str) -> str:

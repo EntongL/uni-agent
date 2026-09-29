@@ -168,7 +168,15 @@ class ClaudeCodeAgent(Agent):
         endpoint = _strip_v1(base_url)
         model = cfg.model.model_name
         argv = self._claude_argv(user_prompt, session_id=session_id, resume=resume)
-        env = self._claude_env(endpoint)
+        env = self._claude_env(endpoint, persist_session=session_id is not None)
+        logger.info(
+            "claude_code: context settings max_context=%s max_output=%s file_read_max_output=%s "
+            "disable_unknown_model_window_enforcement=%s",
+            env.get("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "unset"),
+            env.get("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "unset"),
+            env.get("CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS", "unset"),
+            env.get("CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT", "unset"),
+        )
         # Keep the effective route visible in framework logs.  Do not log the
         # auth token or prompt: this is only to distinguish a per-session
         # Uni-Agent Gateway URL from an external CCR/Anthropic router.
@@ -253,7 +261,7 @@ class ClaudeCodeAgent(Agent):
             argv += ["--verbose"]
         return argv + list(cfg.extra_args)
 
-    def _claude_env(self, endpoint: str) -> dict[str, str]:
+    def _claude_env(self, endpoint: str, *, persist_session: bool = False) -> dict[str, str]:
         cfg: ClaudeCodeConfig = self.config  # type: ignore[assignment]
         model = cfg.model.model_name
         if not model:
@@ -270,7 +278,6 @@ class ClaudeCodeAgent(Agent):
             "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
             "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
             "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
-            "CLAUDE_CODE_SKIP_PROMPT_HISTORY": "1",
             "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1",
             "API_TIMEOUT_MS": "86400000",  # 24 hours
             "CLAUDE_CODE_MAX_RETRIES": "0",
@@ -283,5 +290,10 @@ class ClaudeCodeAgent(Agent):
         }
         if cfg.enable_subagents:
             env["CLAUDE_CODE_SUBAGENT_MODEL"] = model
+        if not persist_session:
+            env["CLAUDE_CODE_SKIP_PROMPT_HISTORY"] = "1"
         env.update(cfg.extra_env)
+        if persist_session:
+            # Explicit --session-id / --resume needs the transcript on disk.
+            env.pop("CLAUDE_CODE_SKIP_PROMPT_HISTORY", None)
         return env

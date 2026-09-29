@@ -199,6 +199,10 @@ class _GatewayActor:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         outcome = await session.run_generation(internal, self._backend)
+        if outcome.capacity_exhausted:
+            # Claude Code can compact and retry an Anthropic-format request only
+            # when the gateway reports a recognizable too-long API error.
+            raise HTTPException(status_code=400, detail="Prompt is too long")
         model = str(payload.get("model") or "unknown")
         if payload.get("stream") is True:
             return anthropic_stream_response(outcome, model=model)
