@@ -60,6 +60,10 @@ class TritonOpGeneratorTaskConfig(TaskConfig):
         default=True,
         description="Remove only the task-owned episode directory when the run ends.",
     )
+    retain_failed_episode: bool = Field(
+        default=False,
+        description="Keep the task-owned episode directory when generation or final evaluation fails.",
+    )
     missing_kernel_retries: int = Field(
         default=0,
         ge=0,
@@ -111,6 +115,7 @@ class TritonOpGeneratorTask(Task):
         evaluation_path = f"{episode_dir}/final-eval/result.json"
 
         async with self.build_sandbox() as sandbox:
+            retain_episode = cfg.retain_failed_episode
             try:
                 agent_workdir = await sandbox.exec(["test", "-d", cfg.agent_workdir])
                 if agent_workdir.exit_code != 0:
@@ -163,6 +168,21 @@ class TritonOpGeneratorTask(Task):
                     evaluator_path=evaluator_path,
                     evaluation_path=evaluation_path,
                 )
+                if result["resolved"]:
+                    retain_episode = False
+                else:
+                    logger.warning(
+                        "Triton operator task %s final KernelGYM score=0: "
+                        "status=%s compiled=%s correctness=%s decoy_kernel=%s "
+                        "error_message=%r case_summary=%s",
+                        instance_id,
+                        result["status"],
+                        result["compiled"],
+                        result["correctness"],
+                        result["decoy_kernel"],
+                        result["error_message"],
+                        result["case_summary"],
+                    )
                 result.update(
                     {
                         "instance_id": instance_id,
@@ -177,8 +197,10 @@ class TritonOpGeneratorTask(Task):
                     extra_info=result,
                 )
             finally:
-                if cfg.cleanup_episode:
+                if cfg.cleanup_episode and not retain_episode:
                     await sandbox.exec(["rm", "-rf", "--", episode_dir])
+                else:
+                    logger.info("Triton operator task %s retained episode at %s", instance_id, episode_dir)
 
     @staticmethod
     def _required_metadata(metadata: dict[str, Any]) -> tuple[str, str]:
@@ -377,6 +399,12 @@ class TritonOpGeneratorTask(Task):
             raise RuntimeError("final KernelGYM result must be a JSON object")
 
         result = score_kernelgym_result(payload)
+        if not result["resolved"]:
+            logger.warning(
+                "Triton operator task %s raw KernelGYM result (first 4000 chars): %s",
+                instance_id,
+                json.dumps(payload, ensure_ascii=False, default=str)[:4000],
+            )
         result["evaluation_command"] = {
             "exit_code": response.exit_code,
             "stdout_tail": (response.stdout or "")[-2000:],

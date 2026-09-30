@@ -103,31 +103,30 @@ Anthropic-compatible Gateway. It does not select the local checkpoint; the
 checkpoint is selected by `--model-path`. In the current resident-router setup,
 `glm-5.2` is the alias that reached the Gateway without the `Model not exist`
 400 seen with `Qwen3-0.6B` and `claude-sonnet-4-5`. It is therefore valid for
-the smoke even when `--model-path` points to Qwen3-0.6B; the parser must still
-follow the actual output. Recent resident-container smoke runs emitted
+the smoke even though `--model-path` points to Qwen3-Coder-30B-A3B-Instruct;
+the parser must still follow the actual output. Recent resident-container runs emitted
 `<function=...><parameter=...>` calls, so the command above uses `qwen3_xml`.
 If the checkpoint/template instead emits JSON inside `<tool_call>`, use `hermes`.
 Prefer the exact ID returned by the
 router's `/v1/models` if that endpoint is available.
 
-The example's Claude Code context/output limits are for the Qwen3-0.6B smoke
-checkpoint: `CLAUDE_CODE_MAX_CONTEXT_TOKENS=40960` and
+The example now targets a 64K-token smoke window for the actual
+`Qwen3-Coder-30B-A3B-Instruct` checkpoint:
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536` and
 `CLAUDE_CODE_MAX_OUTPUT_TOKENS=4096` and
 `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS=4096`. It also enables
 `CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT=1`, which reduces system/tool-schema overhead
-while keeping the skills and tools available. The config also sets
-`CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1` for the custom
-`glm-5.2` route. This disables Claude Code's proactive compaction for an
-unrecognized model ID; it does not increase the checkpoint's real context or
-the Gateway trajectory budget. When an Anthropic-format request reaches the
-Gateway trajectory limit, the Gateway now returns a recognizable `Prompt is
-too long` error so Claude Code can compact and retry.
+while keeping the skills and tools available. The checkpoint declares a 256K
+native window; 64K is a smaller rollout budget for the one-sample smoke.
+The custom `glm-5.2` route keeps Claude Code's proactive compaction enabled.
+If an Anthropic-format request reaches the Gateway trajectory limit, the
+Gateway returns a recognizable `Prompt is too long` error as a fallback.
 
 Set `CLAUDE_CODE_MAX_CONTEXT_TOKENS` to the actual `--model-path` context, and
 set `agent.model.max_total_tokens` so the Gateway's trajectory budget
 (`4096 + max_total_tokens` in this inference recipe) matches the intended
-rollout length. The sample values `4096 + 36864 = 40960` match the Qwen3-0.6B
-smoke checkpoint. The `glm-5.2` served-model alias does not determine either
+rollout length. The sample values `4096 + 61440 = 65536` match the 64K
+smoke budget. The `glm-5.2` served-model alias does not determine either
 limit. In a training job, the Gateway instead uses the rollout's configured
 `prompt_length + response_length`; changing this task YAML does not enlarge a
 training rollout. Keep that sum aligned with the actual vLLM `max_model_len`.
@@ -150,11 +149,14 @@ actor logs the actual `prompt_tokens`, `output_tokens`, requested/effective
 prove that a kernel was written or evaluated. The example config resumes the
 same Claude conversation once when a clean exit leaves `output/kernel_code.py`
 missing (`missing_kernel_retries: 1`). If the file is still missing, the task
-returns `finished=False` and reward 0. Check `task.log` for the final KernelGYM
-status, or an explicit `produced no kernel_code.py` message, and inspect
-matching `framework.log`, `trajectory.json`, and `trajectory.npz`. For the first investigation, set
-`cleanup_episode: false` in `task_config_claude_code.yaml` to retain the
-task-owned candidate files, then restore it before multi-episode runs.
+returns `finished=False` and reward 0. A generated file can also receive
+reward 0 if KernelGYM reports a compile, correctness, or service failure.
+The task log prints those fields and the first 4000 characters of a failed
+KernelGYM result. The example keeps failed episode artifacts at the path logged
+as `retained episode`: inspect `output/kernel_code.py` and
+`final-eval/result.json`. Set `retain_failed_episode: false` for large runs
+after debugging, to avoid accumulating failed episode directories. Matching
+`framework.log`, `trajectory.json`, and `trajectory.npz` contain rollout data.
 
 ## Cross-host resident tunnel
 

@@ -31,6 +31,9 @@
   evaluation_timeout: 900
   evaluation_poll_interval: 2
   cleanup_episode: true
+  # During a smoke run, keep kernel_code.py and final-eval/result.json when
+  # the reward is zero so the evaluator failure can be inspected.
+  retain_failed_episode: true
   # A clean CLI exit without output/kernel_code.py is not task completion.
   # Resume the same Claude conversation once with an artifact-focused prompt.
   missing_kernel_retries: 1
@@ -68,16 +71,12 @@
       KERNELGYM_TOOLKIT: sandbox_v3
       MAX_SMOKE: "2"
       MAX_TURNS: "32"
-      # Match the actual --model-path, not the glm-5.2 served-model alias.
-      # Qwen3-0.6B has max_position_embeddings=40960. A fake 1M window
-      # prevents Claude Code from compacting before the backend runs out.
-      CLAUDE_CODE_MAX_CONTEXT_TOKENS: "40960"
-      # For the custom glm-5.2 route, defer compaction until the backend
-      # rejects an overlong request. This avoids Claude Code's rapid-refill
-      # breaker while the packaged skills are being loaded.
-      CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT: "1"
-      # Reserve more of the 40K checkpoint's context for the prompt, tool schemas,
-      # and the kernelgen skills. Increase only for checkpoints with larger windows.
+      # The actual smoke checkpoint is Qwen3-Coder-30B-A3B-Instruct (native 256K),
+      # although glm-5.2 is the served-model alias. Give the CLI 64K of its
+      # window so the packaged skills fit before compaction. Keep proactive
+      # compaction enabled for this unrecognized alias.
+      CLAUDE_CODE_MAX_CONTEXT_TOKENS: "65536"
+      # Reserve output space inside the 64K smoke window.
       CLAUDE_CODE_MAX_OUTPUT_TOKENS: "4096"
       # Prevent one large skill/reference Read from refilling the context at once.
       CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS: "4096"
@@ -86,9 +85,9 @@
     model:
       temperature: 0.7
       top_p: 0.8
-      # In parallel_infer_verl.py the Gateway also reserves 4096 prompt tokens.
-      # 4096 + 36864 equals the 40960-token Qwen3-0.6B smoke window.
-      max_total_tokens: 36864
+      # parallel_infer_verl.py reserves 4096 prompt tokens, so this gives the
+      # Gateway a 65536-token trajectory budget for the 64K smoke window.
+      max_total_tokens: 61440
 
   prompt_template:
     - role: user

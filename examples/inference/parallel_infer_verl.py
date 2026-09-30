@@ -144,6 +144,14 @@ def init_config(args: argparse.Namespace, *, task_configs: list[dict], served_mo
     rollout.load_format = "auto"
     rollout.prompt_length = DEFAULT_PROMPT_LENGTH
     rollout.response_length = response_length
+    # Keep vLLM's allocated window aligned with the Gateway trajectory cap.
+    # Without this, the two can inherit different defaults from verl/model config.
+    OmegaConf.update(
+        config,
+        "actor_rollout_ref.rollout.max_model_len",
+        DEFAULT_PROMPT_LENGTH + response_length,
+        force_add=True,
+    )
     rollout.tensor_model_parallel_size = args.tensor_parallel_size
     rollout.gpu_memory_utilization = args.gpu_memory_utilization
     rollout.calculate_log_probs = True
