@@ -2,8 +2,9 @@
 
 This recipe runs one `triton_op_generator` row from AscendKernelBench through
 the same Uni-Agent Gateway path used by RL: the rollout engine creates a
-session, Claude Code uses its Anthropic Messages endpoint, and the task
-independently scores `kernel_code.py` with KernelGYM. Finalized trajectories
+session, Claude Code uses its Anthropic Messages endpoint for a
+generate-verify-repair loop, and the task independently scores the final
+`kernel_code.py` with KernelGYM. Finalized trajectories
 carry the generated token IDs, masks, log probabilities, and task reward.
 
 Before running it, verify the prepared resident container contains:
@@ -151,11 +152,30 @@ same Claude conversation once when a clean exit leaves `output/kernel_code.py`
 missing (`missing_kernel_retries: 1`). If the file is still missing, the task
 returns `finished=False` and reward 0. A generated file can also receive
 reward 0 if KernelGYM reports a compile, correctness, or service failure.
-The task log prints those fields and the first 4000 characters of a failed
-KernelGYM result. The example keeps failed episode artifacts at the path logged
-as `retained episode`: inspect `output/kernel_code.py` and
-`final-eval/result.json`. Set `retain_failed_episode: false` for large runs
-after debugging, to avoid accumulating failed episode directories. Matching
+The Claude session receives a task-owned KernelGYM client before it starts.
+It should use the packaged coding skill to generate a candidate, run the client
+with `--summary`, inspect the bounded feedback, edit, and repeat up to
+`agent_verification_attempts`. Full feedback for each attempt is saved under
+`output/agent-eval/`. The task rewrites the client and frozen reference before
+its independent final KernelGYM call, which alone determines the reward.
+With `evaluation_retries: 1`, a completed final evaluation that still rejects
+the candidate sends a short error back to Claude; a healthy session is
+resumed, while a crashed session is replaced with a fresh one. The task then
+scores the edited file again. For large Ascend elementwise operators, the
+prompt asks the agent to cap the launch grid and process multiple tiles per
+program with `tl.num_programs(0)`.
+`matrix_scalar_mul_core_limited.py` is a concrete corrected candidate for the
+large matrix-scalar example; copy it to that episode's `output/kernel_code.py`
+when investigating the retained sample.
+
+The task log includes a short evaluation error and the result file path;
+`TaskResult.extra_info` keeps the short error. The example keeps failed episode
+artifacts at the path logged as `retained episode`: inspect
+`output/kernel_code.py`, `final-eval/result.json`, and any earlier
+`final-eval/attempt-*.json` and `final-eval/kernel-attempt-*.py` files. The full
+evaluator traceback remains in the JSON files. Set
+`retain_failed_episode: false` for large runs after debugging, to avoid
+accumulating failed episode directories. Matching
 `framework.log`, `trajectory.json`, and `trajectory.npz` contain rollout data.
 
 ## Cross-host resident tunnel

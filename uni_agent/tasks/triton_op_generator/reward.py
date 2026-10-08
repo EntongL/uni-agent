@@ -58,5 +58,6 @@ def score_kernelgym_result(payload: Mapping[str, Any]) -> dict[str, Any]:
         "kernel_runtime_ms": _optional_number(payload.get("kernel_runtime"), field="kernel_runtime"),
         "speedup": _optional_number(payload.get("speedup"), field="speedup"),
         "case_summary": dict(case_summary) if case_summary is not None else None,
+        "error_code": payload.get("error_code"),
         "error_message": error_message,
     }

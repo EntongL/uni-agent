@@ -76,6 +76,18 @@ class TritonOpGeneratorTaskConfig(TaskConfig):
         le=2,
         description="Start a fresh Claude Code coding session after a context exhaustion exit.",
     )
+    evaluation_retries: int = Field(
+        default=0,
+        ge=0,
+        le=2,
+        description="Start a fresh coding session to repair a candidate after a completed, failed KernelGYM evaluation.",
+    )
+    agent_verification_attempts: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Maximum KernelGYM verify-and-repair attempts requested inside one agent session.",
+    )
 
     @field_validator("agent_workdir", "episode_root")
     @classmethod
@@ -124,12 +136,16 @@ class TritonOpGeneratorTask(Task):
                         f"{agent_workdir.stderr.strip()}"
                     )
                 await self._prepare_episode(sandbox, episode_dir, output_dir, reference_path, operator_src)
+                # Make the same client available to the agent's inner loop.
+                # Rewrite it before final scoring so agent edits cannot affect reward.
+                await sandbox.write_file(evaluator_path, self._kernelgym_client_source())
                 agent_result, agent_info = await self._run_agent(
                     sandbox=sandbox,
                     cfg=cfg,
                     reference_path=reference_path,
                     output_dir=output_dir,
                     kernel_path=kernel_path,
+                    evaluator_path=evaluator_path,
                 )
 
                 kernel_exists = await self._file_exists(sandbox, kernel_path)
@@ -168,32 +184,130 @@ class TritonOpGeneratorTask(Task):
                     evaluator_path=evaluator_path,
                     evaluation_path=evaluation_path,
                 )
+                for attempt in range(1, cfg.evaluation_retries + 1):
+                    if result["resolved"] or not result["eval_completed"]:
+                        break
+                    previous_result_path = f"{episode_dir}/final-eval/attempt-{attempt - 1}.json"
+                    saved = await sandbox.exec(["cp", "--", evaluation_path, previous_result_path])
+                    if saved.exit_code != 0:
+                        raise RuntimeError(
+                            f"failed to preserve KernelGYM result at {previous_result_path}: {saved.stderr.strip()}"
+                        )
+                    previous_kernel_path = f"{episode_dir}/final-eval/kernel-attempt-{attempt - 1}.py"
+                    saved_kernel = await sandbox.exec(["cp", "--", kernel_path, previous_kernel_path])
+                    if saved_kernel.exit_code != 0:
+                        raise RuntimeError(
+                            f"failed to preserve candidate at {previous_kernel_path}: {saved_kernel.stderr.strip()}"
+                        )
+                    logger.warning(
+                        "Triton operator task %s: KernelGYM rejected candidate "
+                        "error_code=%s error=%r; starting fresh repair session (%d/%d)",
+                        instance_id,
+                        result["error_code"],
+                        self._evaluation_error_excerpt(result["error_message"]),
+                        attempt,
+                        cfg.evaluation_retries,
+                    )
+                    try:
+                        repair_agent = self.build_agent()
+                        if not isinstance(repair_agent, ClaudeCodeAgent):
+                            raise ValueError("KernelGYM evaluation retries require the claude_code agent")
+                        repair_prompt = self._evaluation_repair_prompt(
+                            cfg=cfg,
+                            reference_path=reference_path,
+                            kernel_path=kernel_path,
+                            evaluator_path=evaluator_path,
+                            result=result,
+                        )
+                        previous_session_id = (
+                            agent_result.info.get("claude_session_id")
+                            if agent_result and agent_result.finished else None
+                        )
+                        if isinstance(previous_session_id, str) and previous_session_id:
+                            repair_result = await repair_agent.resume_session(
+                                sandbox=sandbox,
+                                prompt=repair_prompt,
+                                session_id=previous_session_id,
+                                workdir=cfg.agent_workdir,
+                            )
+                        else:
+                            repair_result = await repair_agent.run_session(
+                                sandbox=sandbox,
+                                messages=[{"role": "user", "content": repair_prompt}],
+                                session_id=str(uuid.uuid4()),
+                                workdir=cfg.agent_workdir,
+                            )
+                    except Exception as exc:
+                        logger.exception("Triton operator task %s repair session failed", instance_id)
+                        agent_info["attempts"].append({
+                            "stage": f"evaluation_repair_{attempt}",
+                            "error": f"{type(exc).__name__}: {exc}",
+                        })
+                        break
+                    agent_result = repair_result
+                    agent_info.update({"error": None, **repair_result.info})
+                    agent_info["attempts"].append({
+                        "stage": f"evaluation_repair_{attempt}", **repair_result.info,
+                    })
+                    # A fresh session may also hit the context limit. Score any
+                    # file it left behind instead of depending on its exit code.
+                    if not await self._file_exists(sandbox, kernel_path):
+                        logger.warning(
+                            "Triton operator task %s repair session removed %s",
+                            instance_id,
+                            kernel_path,
+                        )
+                        await sandbox.exec(["cp", "--", previous_kernel_path, kernel_path])
+                        break
+                    await sandbox.write_file(reference_path, operator_src)
+                    cleared = await sandbox.exec(["rm", "-f", "--", evaluation_path])
+                    if cleared.exit_code != 0:
+                        raise RuntimeError(
+                            f"failed to clear stale KernelGYM result at {evaluation_path}: {cleared.stderr.strip()}"
+                        )
+                    result = await self._evaluate_final_kernel(
+                        sandbox=sandbox,
+                        cfg=cfg,
+                        instance_id=instance_id,
+                        reference_path=reference_path,
+                        kernel_path=kernel_path,
+                        evaluator_path=evaluator_path,
+                        evaluation_path=evaluation_path,
+                    )
                 if result["resolved"]:
                     retain_episode = False
                 else:
+                    # The full stack trace is kept in final-eval/result.json.
+                    # Keep Ray's duplicated task/worker logs short and useful.
+                    error_excerpt = self._evaluation_error_excerpt(result["error_message"])
                     logger.warning(
                         "Triton operator task %s final KernelGYM score=0: "
                         "status=%s compiled=%s correctness=%s decoy_kernel=%s "
-                        "error_message=%r case_summary=%s",
+                        "error_code=%s error=%r case_summary=%s result_file=%s",
                         instance_id,
                         result["status"],
                         result["compiled"],
                         result["correctness"],
                         result["decoy_kernel"],
-                        result["error_message"],
+                        result["error_code"],
+                        error_excerpt,
                         result["case_summary"],
+                        evaluation_path,
                     )
+                # The full evaluator response remains in the episode file.
+                # Keep TaskResult small for rollout storage and trainer logs.
+                result["error_message"] = self._evaluation_error_excerpt(result["error_message"])
                 result.update(
                     {
                         "instance_id": instance_id,
-                        "generated_impl_present": generated_impl_exists,
+                        "generated_impl_present": await self._file_exists(sandbox, generated_impl_path),
                         "agent": agent_info,
                     }
                 )
                 return TaskResult(
                     reward=result.pop("reward"),
                     accuracy=result.pop("accuracy"),
-                    finished=agent_result.finished if agent_result is not None else False,
+                    finished=bool(result["resolved"] or (agent_result and agent_result.finished)),
                     extra_info=result,
                 )
             finally:
@@ -227,14 +341,23 @@ class TritonOpGeneratorTask(Task):
         reference_path: str,
         output_dir: str,
         kernel_path: str,
+        evaluator_path: str,
     ):
-        messages = self._messages_with_runtime_paths(cfg.prompt, reference_path=reference_path, output_dir=output_dir)
+        messages = self._messages_with_runtime_paths(
+            cfg.prompt,
+            cfg=cfg,
+            reference_path=reference_path,
+            output_dir=output_dir,
+            evaluator_path=evaluator_path,
+        )
         agent = self.build_agent()
-        if (cfg.missing_kernel_retries or cfg.context_recovery_retries) and not isinstance(
+        if (cfg.missing_kernel_retries or cfg.context_recovery_retries or cfg.evaluation_retries) and not isinstance(
             agent, ClaudeCodeAgent
         ):
             raise ValueError("Claude Code recovery retries require the claude_code agent")
-        claude_session_id = str(uuid.uuid4()) if cfg.missing_kernel_retries else None
+        claude_session_id = str(uuid.uuid4()) if (
+            cfg.missing_kernel_retries or cfg.evaluation_retries
+        ) else None
         attempts: list[dict[str, Any]] = []
         try:
             if claude_session_id is None:
@@ -261,9 +384,13 @@ class TritonOpGeneratorTask(Task):
                     cfg.context_recovery_retries,
                 )
                 recovery_messages = [
-                    {"role": "user", "content": self._context_thrash_prompt(reference_path, kernel_path)}
+                    {"role": "user", "content": self._context_thrash_prompt(
+                        cfg, reference_path, kernel_path, evaluator_path,
+                    )}
                 ]
-                claude_session_id = str(uuid.uuid4()) if cfg.missing_kernel_retries else None
+                claude_session_id = str(uuid.uuid4()) if (
+                    cfg.missing_kernel_retries or cfg.evaluation_retries
+                ) else None
                 if claude_session_id is None:
                     agent_result = await agent.run(
                         sandbox=sandbox, messages=recovery_messages, workdir=cfg.agent_workdir
@@ -288,7 +415,9 @@ class TritonOpGeneratorTask(Task):
                 )
                 agent_result = await agent.resume_session(
                     sandbox=sandbox,
-                    prompt=self._missing_kernel_prompt(reference_path, kernel_path),
+                    prompt=self._missing_kernel_prompt(
+                        cfg, reference_path, kernel_path, evaluator_path,
+                    ),
                     session_id=claude_session_id,
                     workdir=cfg.agent_workdir,
                 )
@@ -298,8 +427,11 @@ class TritonOpGeneratorTask(Task):
             return None, {"error": f"{type(exc).__name__}: {exc}", "attempts": attempts}
         return agent_result, {"error": None, **agent_result.info, "attempts": attempts}
 
-    @staticmethod
-    def _context_thrash_prompt(reference_path: str, kernel_path: str) -> str:
+    @classmethod
+    def _context_thrash_prompt(
+        cls, cfg: TritonOpGeneratorTaskConfig, reference_path: str,
+        kernel_path: str, evaluator_path: str,
+    ) -> str:
         return (
             "A previous Claude session loaded the packaged Triton workflow but stopped "
             "at its context limit. Start a fresh coding stage. Read the immutable "
@@ -307,12 +439,19 @@ class TritonOpGeneratorTask(Task):
             "skill once, and immediately write a runnable Ascend Triton implementation "
             f"defining Model to {kernel_path}. Keep file reads and tool output small; "
             "only load another skill if the coding skill requires it. After the file exists, "
-            "use KernelGYM for evaluation and improve it if needed. Do not run verify.py "
+            "use KernelGYM for evaluation and improve it if needed. "
+            f"Run {cls._agent_evaluation_command(cfg, reference_path, kernel_path, evaluator_path, 0)} "
+            "and use its short failure summary for the next coding pass. For large "
+            "elementwise inputs, bound the Ascend launch grid and loop over tiles "
+            "using tl.num_programs(0). Do not run verify.py "
             "or benchmark.py. Confirm kernel_code.py exists before finishing."
         )
 
-    @staticmethod
-    def _missing_kernel_prompt(reference_path: str, kernel_path: str) -> str:
+    @classmethod
+    def _missing_kernel_prompt(
+        cls, cfg: TritonOpGeneratorTaskConfig, reference_path: str,
+        kernel_path: str, evaluator_path: str,
+    ) -> str:
         return (
             "The previous turn ended before the required final artifact was written. "
             f"The file {kernel_path} does not exist. Continue this same task now: "
@@ -320,12 +459,74 @@ class TritonOpGeneratorTask(Task):
             f"implementation defining Model to {kernel_path}. The reference at "
             f"{reference_path} is immutable; reuse your existing sketch if useful. "
             "Do not stop after describing the next step. Confirm the file exists before finishing. "
-            "Use KernelGYM for evaluation; do not run verify.py or benchmark.py."
+            "For large elementwise inputs, bound the Ascend launch grid and loop "
+            "over tiles using tl.num_programs(0). Use KernelGYM for evaluation "
+            f"with {cls._agent_evaluation_command(cfg, reference_path, kernel_path, evaluator_path, 0)}; "
+            "do not run verify.py or benchmark.py."
+        )
+
+    @staticmethod
+    def _agent_evaluation_command(
+        cfg: TritonOpGeneratorTaskConfig, reference_path: str,
+        kernel_path: str, evaluator_path: str, attempt: int,
+    ) -> str:
+        output_dir = str(PurePosixPath(kernel_path).parent)
+        return (
+            f"python3 {evaluator_path} --url {cfg.kernelgym_url} "
+            f"--reference {reference_path} --kernel {kernel_path} "
+            f"--output {output_dir}/agent-eval/attempt-{attempt}.json "
+            f"--entry-point {cfg.entry_point} --backend {cfg.kernelgym_backend} "
+            f"--toolkit {cfg.kernelgym_toolkit} "
+            f"--correctness-trials {cfg.correctness_trials} "
+            f"--performance-trials {cfg.performance_trials} "
+            f"--timeout {cfg.evaluation_timeout:g} "
+            f"--poll-interval {cfg.evaluation_poll_interval:g} --summary"
+        )
+
+    @staticmethod
+    def _evaluation_error_excerpt(error_message: str | None) -> str:
+        if not error_message:
+            return ""
+        lines = [line.strip() for line in error_message.splitlines() if line.strip()]
+        salient = [
+            line for line in lines
+            if any(marker in line for marker in ("KernelLaunch failed", "coreDim", "Error:", "Exception:"))
+        ]
+        selected = salient[-2:] if salient else lines[-2:]
+        return " | ".join(selected)[-1200:]
+
+    @classmethod
+    def _evaluation_repair_prompt(
+        cls, *, cfg: TritonOpGeneratorTaskConfig, reference_path: str,
+        kernel_path: str, evaluator_path: str, result: dict[str, Any]
+    ) -> str:
+        return (
+            "The existing Ascend Triton candidate failed final KernelGYM evaluation. "
+            "Continue with a focused repair. Read only the candidate and the "
+            f"immutable reference at {kernel_path} and {reference_path}. "
+            f"KernelGYM status={result['status']}, compiled={result['compiled']}, "
+            f"correctness={result['correctness']}, error_code={result['error_code']}. "
+            f"Relevant error: {cls._evaluation_error_excerpt(result['error_message'])}. "
+            "Invoke the installed triton-op-coding skill with the existing code "
+            "and this verifier error, then edit kernel_code.py. Keep tool output "
+            "short and define the required "
+            "Model class. For large elementwise inputs on Ascend, cap the launch grid "
+            "near the Vector Core count and loop over tiles inside each program using "
+            "tl.num_programs(0), for example: for tile in "
+            "range(pid, tl.cdiv(numel, BLOCK_SIZE), tl.num_programs(0)). "
+            "Do not launch one program per small tile when the "
+            "total exceeds the device coreDim limit. After editing, run "
+            f"{cls._agent_evaluation_command(cfg, reference_path, kernel_path, evaluator_path, 1)} "
+            "and use its short summary to repair again if needed. Change the "
+            "attempt number on later runs. The task runner will independently "
+            "score the final file. Do not run verify.py or benchmark.py. "
+            "Confirm the repaired file exists before finishing."
         )
 
     @staticmethod
     def _messages_with_runtime_paths(
-        messages: list[dict[str, Any]], *, reference_path: str, output_dir: str
+        messages: list[dict[str, Any]], *, cfg: TritonOpGeneratorTaskConfig,
+        reference_path: str, output_dir: str, evaluator_path: str,
     ) -> list[dict[str, Any]]:
         rendered = copy.deepcopy(messages)
         user_messages = [message for message in rendered if message.get("role") == "user"]
@@ -335,11 +536,26 @@ class TritonOpGeneratorTask(Task):
         content = user_message.get("content")
         if not isinstance(content, str) or not content.strip():
             raise ValueError("triton_op_generator user prompt must contain non-empty text")
+        kernel_path = f"{output_dir}/kernel_code.py"
         user_message["content"] = (
             f"{content.rstrip()}\n\n"
             "Runtime paths for this episode (do not modify the reference):\n"
             f"REFERENCE_PATH={reference_path}\n"
             f"OUTPUT_DIR={output_dir}\n\n"
+            "Adapt the packaged Phase 3 generate/verify/repair loop to this "
+            "runtime: use KernelGYM as the verifier instead of verify.py or "
+            "benchmark.py. After writing each candidate, run KernelGYM "
+            "from inside this Claude session. Use the installed triton-op-coding "
+            "skill to fix failures using the previous code and the evaluator error. "
+            f"Try at most {cfg.agent_verification_attempts} candidates. The evaluator "
+            "prints a short JSON summary and saves the full response; read only "
+            "the relevant parts of the full response when needed. For the first "
+            "candidate run:\n"
+            f"{TritonOpGeneratorTask._agent_evaluation_command(cfg, reference_path, kernel_path, evaluator_path, 0)}\n"
+            "Change attempt-0.json to attempt-1.json, etc. on retries. A nonzero "
+            "exit or correctness=false means analyze the error, edit the candidate, "
+            "and run KernelGYM again. Stop after a correct result or the attempt "
+            "limit. The task runner will independently score the final file.\n\n"
             "Write the final Triton implementation to OUTPUT_DIR/kernel_code.py. "
             "Use the packaged triton-ascend-kernelgen workflow and KernelGYM only; "
             "do not run verify.py or benchmark.py."
@@ -399,12 +615,6 @@ class TritonOpGeneratorTask(Task):
             raise RuntimeError("final KernelGYM result must be a JSON object")
 
         result = score_kernelgym_result(payload)
-        if not result["resolved"]:
-            logger.warning(
-                "Triton operator task %s raw KernelGYM result (first 4000 chars): %s",
-                instance_id,
-                json.dumps(payload, ensure_ascii=False, default=str)[:4000],
-            )
         result["evaluation_command"] = {
             "exit_code": response.exit_code,
             "stdout_tail": (response.stdout or "")[-2000:],

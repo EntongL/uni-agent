@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
-"""Submit one final candidate to a KernelGYM service from inside a sandbox.
+"""Submit a candidate to a KernelGYM service from inside a sandbox.
 
-This helper uses only the standard library so the task can copy it into the
-resident Ascend container after the agent has finished. Keeping the final call
-outside the agent-owned skill tree prevents a fabricated ``eval_result.json``
-from being mistaken for the training reward.
+The agent may use --summary for concise verification feedback. The task also
+uses this helper for an independent final call after the agent has finished;
+that final response, not an agent-written file, determines the training reward.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -95,6 +96,29 @@ def _result_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _brief_error(payload: dict[str, Any]) -> str:
+    error = payload.get("error_message")
+    if not error and isinstance(payload.get("metadata"), dict):
+        error = payload["metadata"].get("runtime_error")
+    if not isinstance(error, str) or not error:
+        return ""
+    lines = [line.strip() for line in error.splitlines() if line.strip()]
+    salient = [
+        line for line in lines
+        if any(marker in line for marker in ("KernelLaunch failed", "coreDim", "Error:", "Exception:"))
+    ]
+    return " | ".join((salient or lines)[-2:])[-1200:]
+
+
+def _brief_case_summary(payload: dict[str, Any]) -> Any:
+    metadata = payload.get("metadata")
+    summary = metadata.get("case_summary") if isinstance(metadata, dict) else None
+    if summary is None:
+        return None
+    encoded = json.dumps(summary, ensure_ascii=False, default=str)
+    return summary if len(encoded) <= 800 else encoded[:800] + "..."
+
+
 def evaluate(
     *,
     url: str,
@@ -174,9 +198,9 @@ def evaluate(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run a final KernelGYM evaluation")
-    parser.add_argument("--url", required=True)
-    parser.add_argument("--task-id", required=True)
+    parser = argparse.ArgumentParser(description="Run a KernelGYM evaluation")
+    parser.add_argument("--url", default=os.environ.get("KERNELGYM_SERVER_URL"))
+    parser.add_argument("--task-id", default="auto")
     parser.add_argument("--reference", type=Path, required=True)
     parser.add_argument("--kernel", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -189,12 +213,18 @@ def main() -> int:
     parser.add_argument("--enable-triton-detection", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--timeout", type=float, default=900)
     parser.add_argument("--poll-interval", type=float, default=2)
+    parser.add_argument(
+        "--summary", action="store_true",
+        help="Print a bounded result summary for an agent loop and exit nonzero unless correct.",
+    )
     args = parser.parse_args()
+    if not args.url:
+        parser.error("--url or KERNELGYM_SERVER_URL is required")
 
     try:
         result = evaluate(
             url=args.url,
-            task_id=args.task_id,
+            task_id=(f"uni-agent-candidate-{uuid.uuid4().hex}" if args.task_id == "auto" else args.task_id),
             reference_code=args.reference.read_text(encoding="utf-8"),
             kernel_code=args.kernel.read_text(encoding="utf-8"),
             entry_point=args.entry_point,
@@ -213,6 +243,23 @@ def main() -> int:
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    if args.summary:
+        print(json.dumps({
+            "status": result.get("status"),
+            "compiled": result.get("compiled"),
+            "correctness": result.get("correctness"),
+            "decoy_kernel": result.get("decoy_kernel"),
+            "error_code": result.get("error_code"),
+            "error": _brief_error(result),
+            "case_summary": _brief_case_summary(result),
+            "result_file": str(args.output),
+        }, ensure_ascii=False))
+        return 0 if (
+            str(result.get("status", "")).lower() == "completed"
+            and result.get("compiled") is True
+            and result.get("correctness") is True
+            and result.get("decoy_kernel") is not True
+        ) else 1
     return 0
 
 

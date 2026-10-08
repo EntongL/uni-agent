@@ -40,6 +40,12 @@
   # Claude Code may abort after three rapid compactions while loading this
   # workflow's skills. Retry the coding stage in a fresh conversation once.
   context_recovery_retries: 1
+  # If the candidate exists but fails final KernelGYM validation, return the
+  # concise failure to Claude (resume a healthy session, otherwise start fresh).
+  evaluation_retries: 1
+  # The Claude session itself generates, evaluates with KernelGYM, and repairs
+  # up to this many candidates before the independent final reward call.
+  agent_verification_attempts: 3
 
   agent:
     name: claude_code
@@ -58,6 +64,7 @@
       - Write
       - Glob
       - Grep
+      - Skill
     # Temporary Gateway smoke diagnostics. Remove or disable these for large
     # RL runs after the model/parser combination is verified.
     verbose: true
@@ -98,6 +105,13 @@
         Write a runnable first candidate to OUTPUT_DIR/kernel_code.py as soon as
         the essential workflow instructions are loaded. Then evaluate and improve
         it. A plan or sketch alone is not a completed task; confirm the file exists.
+        Keep the generate -> KernelGYM verify -> error analysis -> coding skill
+        repair loop inside this Claude session. Read the bounded KernelGYM
+        summary after each attempt and use it to revise the candidate.
+        For large elementwise tensors on Ascend, bound the launch grid near the
+        Vector Core count and let each program loop over multiple tiles using
+        tl.num_programs(0). A grid with more than 65535 total programs can fail
+        with an invalid coreDim. Define the entry-point class as Model.
 
         Reference implementation:
         {operator_src}
