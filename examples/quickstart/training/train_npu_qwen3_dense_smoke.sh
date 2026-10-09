@@ -79,7 +79,9 @@ kl_loss_coef=${KL_LOSS_COEF:-0.0}
 clip_ratio_low=${CLIP_RATIO_LOW:-0.2}
 clip_ratio_high=${CLIP_RATIO_HIGH:-0.28}
 
-# Qwen3-0.6B has a 32K context window. These defaults are deliberately small.
+# Qwen3-0.6B's native window is 40960 tokens. Agent rollouts can fill most of
+# that, so the actor update computes entropy in chunks instead of one vocab-wide
+# softmax over the whole trajectory.
 max_prompt_length=${MAX_PROMPT_LENGTH:-1024}
 max_response_length=${MAX_RESPONSE_LENGTH:-2048}
 actor_ppo_max_token_len=$((max_prompt_length + max_response_length))
@@ -87,7 +89,15 @@ infer_ppo_max_token_len=$((max_prompt_length + max_response_length))
 
 # Dense-model parallelism: one NPU by default. Increase only after the one-NPU
 # path works; USP and TP must divide the available NPU topology.
-init_device=${INIT_DEVICE:-npu}
+# VeOmni FSDP2 (world size > 1) materializes weights from a meta module and
+# rejects init_device=npu. A single NPU disables FSDP and requires a real device.
+if [[ -n "${INIT_DEVICE:-}" ]]; then
+    init_device=${INIT_DEVICE}
+elif (( NNODES * NGPUS_PER_NODE > 1 )); then
+    init_device=meta
+else
+    init_device=npu
+fi
 if [[ -n "${PARAM_OFFLOAD:-}" ]]; then
     param_offload=${PARAM_OFFLOAD}
 elif (( NNODES * NGPUS_PER_NODE > 1 )); then
@@ -208,6 +218,8 @@ ray job submit --address "${RAY_ADDRESS}" --no-wait --runtime-env "${RUNTIME_ENV
     actor_rollout_ref.actor.veomni.init_device=${init_device} \
     actor_rollout_ref.actor.veomni.ulysses_parallel_size=${usp_size} \
     actor_rollout_ref.actor.veomni.attn_implementation=${attn_impl} \
+    actor_rollout_ref.actor.veomni.entropy_from_logits_with_chunking=True \
+    actor_rollout_ref.actor.veomni.use_torch_compile=False \
     actor_rollout_ref.actor.veomni.rms_norm_implementation=npu \
     actor_rollout_ref.actor.veomni.rotary_pos_emb_implementation=npu \
     actor_rollout_ref.actor.veomni.swiglu_mlp_implementation=eager \
