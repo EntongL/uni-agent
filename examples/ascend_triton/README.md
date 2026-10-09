@@ -13,6 +13,13 @@ and the candidate `kernel_code.py` must define `ModelNew`. The evaluator's
 causes reference validation to fail. Both the agent's verification calls and
 the task's final scoring use the same reference entry point.
 
+`ModelNew` must inherit `torch.nn.Module`: the evaluator transfers the instance
+with `.npu(device=...)` and calls it with the reference inputs. Do not set
+`self.npu = None` or replace inherited methods. Pass tensors directly to Triton
+pointer parameters; `.data_ptr()` supplies an integer instead of a typed pointer.
+The bounded evaluation feedback retains the traceback call site so repairs can
+distinguish a model-transfer failure from a kernel-launch failure.
+
 Before running it, verify the prepared resident container contains:
 
 - the AscendKernelBench checkout and its `agent/.claude/skills` directory;

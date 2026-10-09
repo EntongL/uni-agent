@@ -102,7 +102,10 @@
       content: |-
         Generate a correct Ascend Triton implementation for the following PyTorch operator.
         Preserve the reference Model interface and behavior. The implementation must
-        define ModelNew in OUTPUT_DIR/kernel_code.py.
+        define ModelNew as a torch.nn.Module subclass in OUTPUT_DIR/kernel_code.py.
+        If overriding __init__, call super().__init__(). Do not assign self.npu
+        or replace nn.Module device-transfer or call methods with attributes.
+        Pass Tensor objects directly to Triton pointer parameters, not .data_ptr().
         Write a runnable first candidate to OUTPUT_DIR/kernel_code.py as soon as
         the essential workflow instructions are loaded. Then evaluate and improve
         it. A plan or sketch alone is not a completed task; confirm the file exists.

@@ -16,9 +16,19 @@ from uni_agent.agents.claude_code.agent import ClaudeCodeAgent
 
 from ..base import Task, TaskConfig, TaskResult
 from ..registry import register_task
+from .kernelgym_client import summarize_error
 from .reward import score_kernelgym_result
 
 logger = logging.getLogger(__name__)
+
+_CANDIDATE_RUNTIME_CONTRACT = (
+    "Define ModelNew as a torch.nn.Module subclass with forward matching the reference. "
+    "If overriding __init__, call super().__init__(). The evaluator calls "
+    "model.npu(device=...) and model(*inputs); inherit these methods from nn.Module. "
+    "Do not shadow npu, to, or __call__ with attributes such as self.npu = None. "
+    "Pass torch.Tensor objects directly to Triton pointer parameters, not integer "
+    "addresses from tensor.data_ptr(). Keep the operator computation in Triton. "
+)
 
 
 def _container_path(value: str, *, field: str, allow_root: bool = False) -> str:
@@ -441,6 +451,7 @@ class TritonOpGeneratorTask(Task):
             f"PyTorch reference at {reference_path}, invoke the installed triton-op-coding "
             "skill once, and immediately write a runnable Ascend Triton implementation "
             f"defining ModelNew to {kernel_path}. Keep file reads and tool output small; "
+            f"{_CANDIDATE_RUNTIME_CONTRACT}"
             "The evaluator's --entry-point selects the immutable reference class, "
             "not ModelNew; keep the supplied argument unchanged. "
             "only load another skill if the coding skill requires it. After the file exists, "
@@ -463,6 +474,7 @@ class TritonOpGeneratorTask(Task):
             "use the packaged triton-op-coding workflow and write a valid Triton-Ascend "
             f"implementation defining ModelNew to {kernel_path}. The reference at "
             f"{reference_path} is immutable; reuse your existing sketch if useful. "
+            f"{_CANDIDATE_RUNTIME_CONTRACT}"
             "The evaluator's --entry-point selects the reference class, not ModelNew; "
             "keep the supplied argument unchanged. "
             "Do not stop after describing the next step. Confirm the file exists before finishing. "
@@ -492,15 +504,7 @@ class TritonOpGeneratorTask(Task):
 
     @staticmethod
     def _evaluation_error_excerpt(error_message: str | None) -> str:
-        if not error_message:
-            return ""
-        lines = [line.strip() for line in error_message.splitlines() if line.strip()]
-        salient = [
-            line for line in lines
-            if any(marker in line for marker in ("KernelLaunch failed", "coreDim", "Error:", "Exception:"))
-        ]
-        selected = salient[-2:] if salient else lines[-2:]
-        return " | ".join(selected)[-1200:]
+        return summarize_error(error_message)
 
     @classmethod
     def _evaluation_repair_prompt(
@@ -512,8 +516,10 @@ class TritonOpGeneratorTask(Task):
             "Continue with a focused repair. Read only the candidate and the "
             f"immutable reference at {kernel_path} and {reference_path}. "
             f"KernelGYM status={result['status']}, compiled={result['compiled']}, "
-            f"correctness={result['correctness']}, error_code={result['error_code']}. "
+            f"correctness={result['correctness']}, decoy_kernel={result.get('decoy_kernel', False)}, "
+            f"error_code={result['error_code']}. "
             f"Relevant error: {cls._evaluation_error_excerpt(result['error_message'])}. "
+            f"{_CANDIDATE_RUNTIME_CONTRACT}"
             "Invoke the installed triton-op-coding skill with the existing code "
             "and this verifier error, then edit kernel_code.py. Keep tool output "
             "short and define the required "
@@ -556,6 +562,7 @@ class TritonOpGeneratorTask(Task):
             f"The immutable reference entry point is {cfg.entry_point}. "
             "The evaluator's --entry-point selects the reference class, not the candidate; "
             "do not change it to ModelNew to repair a candidate validation error.\n\n"
+            f"{_CANDIDATE_RUNTIME_CONTRACT}\n\n"
             "Adapt the packaged Phase 3 generate/verify/repair loop to this "
             "runtime: use KernelGYM as the verifier instead of verify.py or "
             "benchmark.py. After writing each candidate, run KernelGYM "

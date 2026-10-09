@@ -124,3 +124,27 @@ def test_cli_uses_reference_entry_point_and_separate_candidate_class(
     if expected_error:
         assert expected_error in summary["error"]
     assert reference.read_text(encoding="utf-8") == "class Model: pass\n"
+
+
+@pytest.mark.cpu
+@pytest.mark.level0
+@pytest.mark.parametrize("field", ["error_message", "metadata"])
+def test_error_summary_preserves_npu_failure_call_site(field):
+    traceback = (
+        'Kernel execution failed: Traceback (most recent call last):\n'
+        '  File "/opt/kernelgym/toolkit/sandbox_v3/pipeline.py", line 39, in _run_correctness_step\n'
+        '    return run_and_check_correctness_fornpukernel(\n'
+        '  File "/opt/kernelgym/toolkit/sandbox_v3/correctness.py", line 445, in check\n'
+        '    model_new = new_model_instance.npu(device=device)\n'
+        '                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n'
+        "TypeError: 'NoneType' object is not callable\n"
+    )
+    payload = (
+        {"error_message": traceback} if field == "error_message"
+        else {"metadata": {"runtime_error": traceback}}
+    )
+    summary = kernelgym_client._brief_error(payload)
+    assert "new_model_instance.npu(device=device)" in summary
+    assert "correctness.py" in summary
+    assert "TypeError: 'NoneType' object is not callable" in summary
+    assert len(summary) <= 1200

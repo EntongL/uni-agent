@@ -228,3 +228,30 @@ def test_all_agent_stages_keep_reference_and_candidate_entry_points_separate(sta
     assert "--entry-point Model --backend" in prompt
     assert "--entry-point ModelNew" not in prompt
     assert "not the candidate" in prompt or "not ModelNew" in prompt
+    assert "torch.nn.Module subclass" in prompt
+    assert "super().__init__()" in prompt
+    assert "Pass torch.Tensor objects directly" in prompt
+    assert "Do not shadow npu" in prompt
+
+
+@pytest.mark.cpu
+@pytest.mark.level0
+def test_repair_prompt_retains_failed_npu_call_and_decoy_status():
+    prompt = TritonOpGeneratorTask._evaluation_repair_prompt(
+        cfg=_config(), reference_path="/tmp/episode/reference.py",
+        kernel_path="/tmp/episode/output/kernel_code.py",
+        evaluator_path="/tmp/episode/kernelgym_final_client.py",
+        result={
+            "status": "completed", "compiled": True, "correctness": False,
+            "decoy_kernel": True, "error_code": "RUNTIME_ERROR",
+            "error_message": (
+                'Traceback (most recent call last):\n'
+                '  File "correctness.py", line 445, in check\n'
+                '    model_new = new_model_instance.npu(device=device)\n'
+                "TypeError: 'NoneType' object is not callable"
+            ),
+        },
+    )
+    assert "new_model_instance.npu(device=device)" in prompt
+    assert "decoy_kernel=True" in prompt
+    assert "self.npu = None" in prompt

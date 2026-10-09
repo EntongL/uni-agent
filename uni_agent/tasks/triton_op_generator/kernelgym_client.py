@@ -96,18 +96,25 @@ def _result_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def _brief_error(payload: dict[str, Any]) -> str:
-    error = payload.get("error_message")
-    if not error and isinstance(payload.get("metadata"), dict):
-        error = payload["metadata"].get("runtime_error")
+def summarize_error(error: str | None) -> str:
+    """Keep the failing call site as well as the exception in bounded feedback."""
     if not isinstance(error, str) or not error:
         return ""
     lines = [line.strip() for line in error.splitlines() if line.strip()]
+    if any(line.startswith('File "') for line in lines):
+        return " | ".join(lines[-8:])[-1200:]
     salient = [
         line for line in lines
         if any(marker in line for marker in ("KernelLaunch failed", "coreDim", "Error:", "Exception:"))
     ]
     return " | ".join((salient or lines)[-2:])[-1200:]
+
+
+def _brief_error(payload: dict[str, Any]) -> str:
+    error = payload.get("error_message")
+    if not error and isinstance(payload.get("metadata"), dict):
+        error = payload["metadata"].get("runtime_error")
+    return summarize_error(error)
 
 
 def _brief_case_summary(payload: dict[str, Any]) -> Any:
