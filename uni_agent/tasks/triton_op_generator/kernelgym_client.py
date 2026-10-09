@@ -204,7 +204,10 @@ def main() -> int:
     parser.add_argument("--reference", type=Path, required=True)
     parser.add_argument("--kernel", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--entry-point", default="Model")
+    parser.add_argument(
+        "--entry-point", default="Model",
+        help="Reference model class (default: Model); the candidate must define ModelNew.",
+    )
     parser.add_argument("--backend", default="triton")
     parser.add_argument("--toolkit", default="sandbox_v3")
     parser.add_argument("--correctness-trials", type=int, default=5)

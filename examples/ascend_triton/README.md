@@ -7,6 +7,12 @@ generate-verify-repair loop, and the task independently scores the final
 `kernel_code.py` with KernelGYM. Finalized trajectories
 carry the generated token IDs, masks, log probabilities, and task reward.
 
+KernelGYM uses separate class names: the immutable reference defines `Model`,
+and the candidate `kernel_code.py` must define `ModelNew`. The evaluator's
+`--entry-point Model` selects the reference class; changing it to `ModelNew`
+causes reference validation to fail. Both the agent's verification calls and
+the task's final scoring use the same reference entry point.
+
 Before running it, verify the prepared resident container contains:
 
 - the AscendKernelBench checkout and its `agent/.claude/skills` directory;

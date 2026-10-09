@@ -25,6 +25,7 @@
   kernelgym_url: http://10.1.30.41:19001
   kernelgym_toolkit: sandbox_v3
   kernelgym_backend: triton
+  # KernelGYM uses this for the reference; the candidate class is ModelNew.
   entry_point: Model
   correctness_trials: 3
   performance_trials: 10
@@ -101,7 +102,7 @@
       content: |-
         Generate a correct Ascend Triton implementation for the following PyTorch operator.
         Preserve the reference Model interface and behavior. The implementation must
-        define Model in OUTPUT_DIR/kernel_code.py.
+        define ModelNew in OUTPUT_DIR/kernel_code.py.
         Write a runnable first candidate to OUTPUT_DIR/kernel_code.py as soon as
         the essential workflow instructions are loaded. Then evaluate and improve
         it. A plan or sketch alone is not a completed task; confirm the file exists.
@@ -111,7 +112,9 @@
         For large elementwise tensors on Ascend, bound the launch grid near the
         Vector Core count and let each program loop over multiple tiles using
         tl.num_programs(0). A grid with more than 65535 total programs can fail
-        with an invalid coreDim. Define the entry-point class as Model.
+        with an invalid coreDim. Define the candidate class as ModelNew.
+        KernelGYM's --entry-point Model selects the reference class, not the
+        candidate class. Keep that argument unchanged during repairs.
 
         Reference implementation:
         {operator_src}

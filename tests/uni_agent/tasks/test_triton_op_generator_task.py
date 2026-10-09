@@ -101,6 +101,9 @@ def test_task_restores_reference_and_uses_independent_final_evaluator():
     assert result.extra_info["speedup"] == 1.25
     assert any(command[:1] == ["python3"] for command in sandbox.commands)
     assert any(content == b"class Model: pass\n" for content in sandbox.files.values())
+    evaluation = next(command for command in sandbox.commands if command[:1] == ["python3"])
+    assert evaluation[evaluation.index("--entry-point") + 1] == "Model"
+    assert sandbox.files[evaluation[evaluation.index("--kernel") + 1]] == b"class ModelNew: pass\n"
 
 
 @pytest.mark.cpu
@@ -177,7 +180,7 @@ def test_missing_kernel_resumes_same_claude_session_once(write_on_resume):
             self.resume_calls += 1
             if write_on_resume:
                 kernel_path = prompt.split("The file ", 1)[1].split(" does not exist", 1)[0]
-                await sandbox.write_file(kernel_path, "class Model: pass\n")
+                await sandbox.write_file(kernel_path, "class ModelNew: pass\n")
             return AgentResult(info={"exit_code": 0}, finished=True)
 
     agent = ContinuableAgent()
@@ -191,3 +194,37 @@ def test_missing_kernel_resumes_same_claude_session_once(write_on_resume):
     assert result.reward == (1.0 if write_on_resume else 0.0)
     assert len(result.extra_info["agent"]["attempts"]) == 2
     assert any(command[:2] == ["test", "-f"] for command in sandbox.commands)
+
+
+@pytest.mark.cpu
+@pytest.mark.level0
+@pytest.mark.parametrize("stage", ["initial", "missing", "context", "repair"])
+def test_all_agent_stages_keep_reference_and_candidate_entry_points_separate(stage):
+    cfg = _config()
+    paths = {
+        "reference_path": "/tmp/episode/reference.py",
+        "kernel_path": "/tmp/episode/output/kernel_code.py",
+        "evaluator_path": "/tmp/episode/kernelgym_final_client.py",
+    }
+    if stage == "initial":
+        prompt = TritonOpGeneratorTask._messages_with_runtime_paths(
+            cfg.prompt, cfg=cfg, reference_path=paths["reference_path"],
+            output_dir="/tmp/episode/output", evaluator_path=paths["evaluator_path"],
+        )[0]["content"]
+    elif stage == "missing":
+        prompt = TritonOpGeneratorTask._missing_kernel_prompt(cfg, **paths)
+    elif stage == "context":
+        prompt = TritonOpGeneratorTask._context_thrash_prompt(cfg, **paths)
+    else:
+        prompt = TritonOpGeneratorTask._evaluation_repair_prompt(
+            cfg=cfg, **paths,
+            result={
+                "status": "failed", "compiled": False, "correctness": False,
+                "error_code": "VALIDATION_ERROR",
+                "error_message": "Kernel code validation failed: Code must contain a 'ModelNew' class",
+            },
+        )
+    assert "ModelNew" in prompt
+    assert "--entry-point Model --backend" in prompt
+    assert "--entry-point ModelNew" not in prompt
+    assert "not the candidate" in prompt or "not ModelNew" in prompt

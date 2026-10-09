@@ -51,7 +51,10 @@ class TritonOpGeneratorTaskConfig(TaskConfig):
     )
     kernelgym_toolkit: str = Field(default="sandbox_v3")
     kernelgym_backend: str = Field(default="triton")
-    entry_point: str = Field(default="Model")
+    entry_point: str = Field(
+        default="Model",
+        description="Reference model entry point; KernelGYM loads the candidate as ModelNew.",
+    )
     correctness_trials: int = Field(default=5, ge=1)
     performance_trials: int = Field(default=100, ge=1)
     evaluation_timeout: float = Field(default=900.0, gt=0)
@@ -437,7 +440,9 @@ class TritonOpGeneratorTask(Task):
             "at its context limit. Start a fresh coding stage. Read the immutable "
             f"PyTorch reference at {reference_path}, invoke the installed triton-op-coding "
             "skill once, and immediately write a runnable Ascend Triton implementation "
-            f"defining Model to {kernel_path}. Keep file reads and tool output small; "
+            f"defining ModelNew to {kernel_path}. Keep file reads and tool output small; "
+            "The evaluator's --entry-point selects the immutable reference class, "
+            "not ModelNew; keep the supplied argument unchanged. "
             "only load another skill if the coding skill requires it. After the file exists, "
             "use KernelGYM for evaluation and improve it if needed. "
             f"Run {cls._agent_evaluation_command(cfg, reference_path, kernel_path, evaluator_path, 0)} "
@@ -456,8 +461,10 @@ class TritonOpGeneratorTask(Task):
             "The previous turn ended before the required final artifact was written. "
             f"The file {kernel_path} does not exist. Continue this same task now: "
             "use the packaged triton-op-coding workflow and write a valid Triton-Ascend "
-            f"implementation defining Model to {kernel_path}. The reference at "
+            f"implementation defining ModelNew to {kernel_path}. The reference at "
             f"{reference_path} is immutable; reuse your existing sketch if useful. "
+            "The evaluator's --entry-point selects the reference class, not ModelNew; "
+            "keep the supplied argument unchanged. "
             "Do not stop after describing the next step. Confirm the file exists before finishing. "
             "For large elementwise inputs, bound the Ascend launch grid and loop "
             "over tiles using tl.num_programs(0). Use KernelGYM for evaluation "
@@ -510,7 +517,9 @@ class TritonOpGeneratorTask(Task):
             "Invoke the installed triton-op-coding skill with the existing code "
             "and this verifier error, then edit kernel_code.py. Keep tool output "
             "short and define the required "
-            "Model class. For large elementwise inputs on Ascend, cap the launch grid "
+            "ModelNew class. The evaluator's --entry-point selects the reference class, "
+            "not the candidate class; keep the supplied entry-point unchanged. "
+            "For large elementwise inputs on Ascend, cap the launch grid "
             "near the Vector Core count and loop over tiles inside each program using "
             "tl.num_programs(0), for example: for tile in "
             "range(pid, tl.cdiv(numel, BLOCK_SIZE), tl.num_programs(0)). "
@@ -542,6 +551,11 @@ class TritonOpGeneratorTask(Task):
             "Runtime paths for this episode (do not modify the reference):\n"
             f"REFERENCE_PATH={reference_path}\n"
             f"OUTPUT_DIR={output_dir}\n\n"
+            "KernelGYM entry-point contract: the candidate must define class ModelNew "
+            "in OUTPUT_DIR/kernel_code.py, preserving the reference interface and behavior. "
+            f"The immutable reference entry point is {cfg.entry_point}. "
+            "The evaluator's --entry-point selects the reference class, not the candidate; "
+            "do not change it to ModelNew to repair a candidate validation error.\n\n"
             "Adapt the packaged Phase 3 generate/verify/repair loop to this "
             "runtime: use KernelGYM as the verifier instead of verify.py or "
             "benchmark.py. After writing each candidate, run KernelGYM "
@@ -556,7 +570,7 @@ class TritonOpGeneratorTask(Task):
             "exit or correctness=false means analyze the error, edit the candidate, "
             "and run KernelGYM again. Stop after a correct result or the attempt "
             "limit. The task runner will independently score the final file.\n\n"
-            "Write the final Triton implementation to OUTPUT_DIR/kernel_code.py. "
+            "Write the final Triton implementation defining ModelNew to OUTPUT_DIR/kernel_code.py. "
             "Use the packaged triton-ascend-kernelgen workflow and KernelGYM only; "
             "do not run verify.py or benchmark.py."
         )

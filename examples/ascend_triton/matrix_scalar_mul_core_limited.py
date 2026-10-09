@@ -18,7 +18,7 @@ def matrix_scalar_mul_kernel(input_ptr, output_ptr, scalar, n_elements, BLOCK_SI
         tl.store(output_ptr + offsets, values * scalar, mask=mask)
 
 
-class Model(nn.Module):
+class ModelNew(nn.Module):
     def forward(self, A: torch.Tensor, s: float) -> torch.Tensor:
         source = A.contiguous()
         output = torch.empty_like(source)
