@@ -26,7 +26,9 @@ The standard fields are:
 - `provider`: registered backend name.
 - `image`: container image used by image-backed providers such as Docker and Modal.
 - `image_map`: optional rewrite from the dataset image name to the image your cluster can pull (see below).
-- `runtime_timeout`: maximum remote sandbox lifetime.
+- `image_mounts`: optional runtime images mounted into the task sandbox.
+- `executable_paths`: command names mapped to executables supplied by the task or mounted images.
+- `runtime_timeout`: maximum sandbox lifetime.
 - `sandbox_kwargs`: provider-specific constructor arguments.
 
 Unknown fields are rejected. Put provider-specific options inside `sandbox_kwargs`.
@@ -48,6 +50,23 @@ sandbox:
 `**` copies the instance-specific path, so `swebench/sweb.eval.x86_64.astropy_1776_astropy-13033` becomes `<your-registry>/swe-bench-verified/sweb.eval.x86_64.astropy_1776_astropy-13033:v2`.
 
 List as many rules as you need; the first matching `from` is used. Images that match none of the rules are left unchanged.
+
+### Runtime images
+
+Black-box agent harnesses can be packaged separately from task images and attached with:
+
+```yaml
+sandbox:
+  provider: modal
+  image: swebench/sweb.eval.x86_64.example
+  image_mounts:
+    - image: docker.io/example/claude-code-runtime:1.0
+      mount_path: /opt/agent-runtime
+  executable_paths:
+    claude: /opt/agent-runtime/bin/claude
+```
+
+Docker, Modal, and OpenYuanRong support `image_mounts`. `image_map` rewrites only the task `image`, so mounted image references must already be complete and pullable. `executable_paths` exposes selected mounted commands after startup; Local and veFaaS reject it.
 
 ## Lifecycle
 
@@ -74,6 +93,7 @@ The shared lifecycle uses:
 
 - `SANDBOX_STARTUP_TIMEOUT`: startup timeout, 600 seconds by default.
 - `SANDBOX_STARTUP_CONCURRENCY`: process-wide startup limit, 64 by default.
+- `SANDBOX_STOP_TIMEOUT`: timeout for the cleanup `stop()` after a failed or cancelled start, 120 seconds by default. Cancellation waits for this cleanup, so the bound keeps a hung provider from blocking it forever.
 
 Remote providers should implement `is_alive()` as a non-throwing health probe.
 
@@ -142,6 +162,8 @@ def from_config(cls, config: SandboxConfig):
     return cls(
         image=config.image,
         runtime_timeout=config.runtime_timeout,
+        image_mounts=config.image_mounts,
+        executable_paths=config.executable_paths,
         **config.sandbox_kwargs,
     )
 ```

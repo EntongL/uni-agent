@@ -100,7 +100,7 @@ def _rule(text: str = "", width: int = 50, ch: str = "-") -> str:
     return f"{ch * (pad // 2)} {text} {ch * (pad - pad // 2)}"
 
 
-def init_config(args: argparse.Namespace, *, task_configs: list[dict], served_model_name: str):
+def init_config(args: argparse.Namespace, *, served_model_name: str):
     """Compose verl's ``ppo_trainer`` config and override the engine + framework knobs."""
     from hydra import compose, initialize_config_dir
 
@@ -110,21 +110,17 @@ def init_config(args: argparse.Namespace, *, task_configs: list[dict], served_mo
 
     rollout = config.actor_rollout_ref.rollout
 
-    model_cfgs = [entry.get("agent", {}).get("model", {}) for entry in task_configs]
-    temperature = model_cfgs[0].get("temperature", DEFAULT_TEMPERATURE)
-    top_p = model_cfgs[0].get("top_p", DEFAULT_TOP_P)
-    rollout.temperature = temperature
-    rollout.top_p = top_p
-    rollout.val_kwargs.temperature = temperature
-    rollout.val_kwargs.top_p = top_p
+    rollout.temperature = args.temperature
+    rollout.top_p = args.top_p
+    rollout.top_k = args.top_k
+    rollout.val_kwargs.temperature = args.temperature
+    rollout.val_kwargs.top_p = args.top_p
+    rollout.val_kwargs.top_k = args.top_k
+    # Use the configured sampling values in the validation partition used by inference.
+    rollout.val_kwargs.do_sample = True
 
-    # response_length = the agent's episode token budget (max_total_tokens: the full
-    # prompt+gen context the loop may consume); DEFAULT_RESPONSE_LENGTH is the fallback.
-    max_total_tokens = max(
-        (m.get("max_total_tokens", DEFAULT_RESPONSE_LENGTH) for m in model_cfgs),
-        default=DEFAULT_RESPONSE_LENGTH,
-    )
-    response_length = int(max_total_tokens)
+    # Length capacity is configured independently of Agent request sampling.
+    response_length = args.response_length
 
     # Fan-out: the framework runs rollout.n gateway sessions per prompt.
     rollout.n = max(1, args.n)
@@ -144,14 +140,7 @@ def init_config(args: argparse.Namespace, *, task_configs: list[dict], served_mo
     rollout.load_format = "auto"
     rollout.prompt_length = DEFAULT_PROMPT_LENGTH
     rollout.response_length = response_length
-    # Keep vLLM's allocated window aligned with the Gateway trajectory cap.
-    # Without this, the two can inherit different defaults from verl/model config.
-    OmegaConf.update(
-        config,
-        "actor_rollout_ref.rollout.max_model_len",
-        DEFAULT_PROMPT_LENGTH + response_length,
-        force_add=True,
-    )
+    rollout.max_model_len = rollout.prompt_length + rollout.response_length
     rollout.tensor_model_parallel_size = args.tensor_parallel_size
     rollout.gpu_memory_utilization = args.gpu_memory_utilization
     rollout.calculate_log_probs = True
@@ -159,6 +148,13 @@ def init_config(args: argparse.Namespace, *, task_configs: list[dict], served_mo
     rollout.disable_log_stats = False
     rollout.free_cache_engine = False
     OmegaConf.update(config, "actor_rollout_ref.rollout.enable_sleep_mode", False, force_add=True)
+    if args.engine == "vllm":
+        OmegaConf.update(
+            config,
+            "actor_rollout_ref.rollout.engine_kwargs.vllm.kv_cache_dtype",
+            getattr(args, "kv_cache_dtype", "auto"),
+            force_add=True,
+        )
 
     # Gateway tool-call parser: the gateway decodes tool calls from raw tokens, so
     # this must match the model's chat template (the analog of vLLM's
@@ -167,6 +163,7 @@ def init_config(args: argparse.Namespace, *, task_configs: list[dict], served_mo
 
     agent_framework_cfg = {
         "gateway_count": args.gateway_count,
+        "allowed_request_sampling_param_keys": args.allowed_request_sampling_param_keys,
         "agent_runners": {
             "task": {
                 "runner_fqn": "uni_agent.framework.task_runner.run_task",
@@ -338,9 +335,9 @@ def main() -> None:
         "--task-config",
         required=True,
         help="Path to a YAML task config: one ``- name: ...`` entry or a list of them (required). "
-        "run_task routes each row to the entry whose 'name' matches the row's task; all agent/model "
-        "knobs (sampling, max_total_tokens, max_steps, ...) come from it. The endpoint is bound to the "
-        "gateway session.",
+        "run_task routes each row by task name. White-box agents use agent.sampling_params_override; "
+        "allow extra request keys with --allowed-request-sampling-param-keys. "
+        "The endpoint is bound to the gateway session.",
     )
     parser.add_argument(
         "--result-path",
@@ -366,6 +363,24 @@ def main() -> None:
         "--n", type=int, default=1, help="Rollout sessions per instance (rollout.n; scores average over all)."
     )
 
+    # Shared rollout defaults; white-box agents may override request sampling.
+    parser.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE, help="Default sampling temperature.")
+    parser.add_argument("--top-p", type=float, default=DEFAULT_TOP_P, help="Default nucleus sampling probability.")
+    parser.add_argument("--top-k", type=int, default=-1, help="Default top-k sampling (-1 disables).")
+    parser.add_argument(
+        "--allowed-request-sampling-param-keys",
+        nargs="+",
+        default=[],
+        help="Extra request sampling keys allowed in addition to max_tokens and stop.",
+    )
+
+    parser.add_argument(
+        "--response-length",
+        type=int,
+        default=DEFAULT_RESPONSE_LENGTH,
+        help="VERL rollout response_length capacity (tokens); not a per-request output cap.",
+    )
+
     # Engine / hardware.
     parser.add_argument(
         "--engine",
@@ -384,6 +399,11 @@ def main() -> None:
         "--tensor-parallel-size", "--tp", dest="tensor_parallel_size", type=int, default=4, help="Tensor parallel size."
     )
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9, help="Engine GPU memory fraction.")
+    parser.add_argument(
+        "--kv-cache-dtype",
+        default="auto",
+        help="vLLM KV-cache dtype, for example 'auto' or 'fp8'.",
+    )
     parser.add_argument(
         "--gateway-count",
         type=int,
@@ -414,7 +434,7 @@ def main() -> None:
     _clear_inherited_local_rank()
     _init_ray()
 
-    resolver = TaskConfigResolver.from_file(args.task_config)
+    TaskConfigResolver.from_file(args.task_config)
     served_model_name = args.served_model_name or os.path.basename(os.path.expanduser(args.model_path).rstrip("/"))
 
     dataset = load_dataset("parquet", data_files=args.data_path, split="train")
@@ -428,13 +448,11 @@ def main() -> None:
         return
     n = max(1, args.n)
 
-    task_configs = list(resolver.defaults_by_name.values())
-
     logger.info(f"loaded {len(samples)} prompts (x n={n} sessions each) from {args.data_path}")
 
     # 1. TransferQueue + verl inference engine (Ray auto-inits via the actors below).
     logger.info("initializing configuration, TransferQueue, and LLMServerManager...")
-    config = init_config(args, task_configs=task_configs, served_model_name=served_model_name)
+    config = init_config(args, served_model_name=served_model_name)
     tq.init(config.transfer_queue)
     llm_server_manager = LLMServerManager.create(config=config)
 

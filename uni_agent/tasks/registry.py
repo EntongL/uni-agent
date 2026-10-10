@@ -23,10 +23,11 @@ TASK_MODULES: dict[str, str] = {
     "harbor": "uni_agent.tasks.harbor.task",
     "swe_bench": "uni_agent.tasks.swe_bench.task",
     "swe_bench_multilingual": "uni_agent.tasks.swe_bench_multilingual.task",
+    "swe_bench_pro": "uni_agent.tasks.swe_bench_pro.task",
     "swe_rebench": "uni_agent.tasks.swe_rebench.task",
     "hotpotqa": "uni_agent.tasks.hotpotqa.task",
     "terminal_bench": "uni_agent.tasks.terminal_bench.task",
-    "triton_op_generator": "uni_agent.tasks.triton_op_generator.task",
+    "npu_triton_kernel": "uni_agent.tasks.kernel_bench.task",
 }
 
 

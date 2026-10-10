@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import logging
+import math
 import uuid
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
@@ -10,7 +10,7 @@ from .base import ExecResult, Sandbox, _to_str
 from .registry import register_sandbox
 
 if TYPE_CHECKING:
-    from .base import SandboxConfig
+    from .base import ImageMount, SandboxConfig
 
 
 logger = logging.getLogger(__name__)
@@ -27,44 +27,33 @@ def _positive_timeout(name: str, value: float | None) -> float | None:
 
 @register_sandbox("docker")
 class DockerSandbox(Sandbox):
-    """Run an isolated sandbox from an image available to a local Docker daemon."""
+    """Run an isolated sandbox from an image available to a local Docker daemon.
+
+    Image mounts require a daemon backed by the containerd image store.
+    """
 
     def __init__(
         self,
         *,
-        image: str | None = "python:3.12",
+        image: str = "python:3.12",
+        runtime_timeout: float = 3600.0,
         docker_binary: str = "docker",
         container_name: str | None = None,
         container_ref: str | None = None,
         verify_container_image: bool = True,
         run_args: list[str] | None = None,
         pull_policy: str = "missing",
-        pull_timeout: float | None = None,
-        start_timeout: float | None = None,
-        entrypoint: str = "sleep",
-        command: list[str] | None = None,
+        pull_timeout: float | None = 600.0,
+        start_timeout: float | None = 600.0,
+        image_mounts: list[ImageMount] | None = None,
+        executable_paths: dict[str, str] | None = None,
     ) -> None:
-        if container_ref is not None and not container_ref.strip():
-            raise ValueError("container_ref must be a non-empty Docker container name or ID")
-        if container_ref is not None:
-            conflicts = []
-            if container_name is not None:
-                conflicts.append("container_name")
-            if run_args:
-                conflicts.append("run_args")
-            if pull_policy != "missing":
-                conflicts.append("pull_policy")
-            if entrypoint != "sleep":
-                conflicts.append("entrypoint")
-            if command is not None:
-                conflicts.append("command")
-            if conflicts:
-                joined = ", ".join(conflicts)
-                raise ValueError(f"container_ref cannot be combined with Docker create options: {joined}")
-        elif not image:
-            raise ValueError("image is required when container_ref is not set")
-
+        if not math.isfinite(runtime_timeout) or runtime_timeout <= 0:
+            raise ValueError("runtime_timeout must be finite and positive")
         self.image = image
+        self.runtime_timeout = float(runtime_timeout)
+        self.image_mounts = list(image_mounts or [])
+        self.executable_paths = dict(executable_paths or {})
         self.docker_binary = docker_binary
         self.container_name = container_name
         self.container_ref = container_ref
@@ -75,13 +64,17 @@ class DockerSandbox(Sandbox):
         self.pull_policy = pull_policy
         self.pull_timeout = _positive_timeout("pull_timeout", pull_timeout)
         self.start_timeout = _positive_timeout("start_timeout", start_timeout)
-        self.entrypoint = entrypoint
-        self.command = list(command or ["infinity"])
         self._container_name: str | None = None
 
     @classmethod
     def from_config(cls, config: SandboxConfig) -> DockerSandbox:
-        return cls(image=config.image, **config.sandbox_kwargs)
+        return cls(
+            image=config.image,
+            runtime_timeout=config.runtime_timeout,
+            image_mounts=config.image_mounts,
+            executable_paths=config.executable_paths,
+            **config.sandbox_kwargs,
+        )
 
     async def _run_docker(self, *args: str, timeout: float | None = None) -> ExecResult:
         try:
@@ -110,100 +103,66 @@ class DockerSandbox(Sandbox):
             stderr=_to_str(stderr),
         )
 
-    async def _has_image(self) -> bool:
-        return (await self._run_docker("image", "inspect", self.image)).exit_code == 0
+    async def _has_image(self, image: str) -> bool:
+        return (await self._run_docker("image", "inspect", image)).exit_code == 0
 
-    async def _pull_image(self) -> None:
-        """Fetch the image up front so the pull is bounded by ``pull_timeout``, not by ``docker run``."""
+    async def _pull_image(self, image: str) -> None:
+        """Pull one image within ``pull_timeout``."""
         try:
-            pulled = await self._run_docker("pull", self.image, timeout=self.pull_timeout)
+            pulled = await self._run_docker("pull", image, timeout=self.pull_timeout)
         except asyncio.TimeoutError as exc:
-            raise TimeoutError(
-                f"Pulling Docker image {self.image!r} exceeded pull_timeout={self.pull_timeout:g}s"
-            ) from exc
+            assert self.pull_timeout is not None
+            raise TimeoutError(f"Pulling Docker image {image!r} exceeded pull_timeout={self.pull_timeout:g}s") from exc
         if pulled.exit_code != 0:
             detail = pulled.stderr.strip() or pulled.stdout.strip()
-            raise RuntimeError(f"Failed to pull Docker image {self.image!r}: {detail}")
+            raise RuntimeError(f"Failed to pull Docker image {image!r}: {detail}")
+
+    async def _prepare_image(self, image: str) -> None:
+        """Apply ``pull_policy`` to one task or mounted image."""
+        if self.pull_policy == "always":
+            await self._pull_image(image)
+            return
+        if await self._has_image(image):
+            return
+        if self.pull_policy == "never":
+            raise RuntimeError(f"Docker image {image!r} is not available locally")
+        await self._pull_image(image)
 
     async def start(self) -> None:
         if self._container_name is not None:
             return
 
-        if self.container_ref is not None:
-            inspected = await self._run_docker(
-                "inspect",
-                "--type",
-                "container",
-                "--format",
-                "{{.Id}}\t{{.State.Running}}\t{{.Image}}",
-                self.container_ref,
-            )
-            if inspected.exit_code != 0:
-                detail = inspected.stderr.strip() or inspected.stdout.strip()
-                raise RuntimeError(f"Docker container {self.container_ref!r} is unavailable: {detail}")
-
-            fields = inspected.stdout.strip().split("\t")
-            if len(fields) != 3 or not fields[0]:
-                raise RuntimeError(
-                    f"Docker container {self.container_ref!r} returned an invalid inspect response: "
-                    f"{inspected.stdout.strip()!r}"
-                )
-            container_id, running, container_image_id = fields
-            if running != "true":
-                raise RuntimeError(f"Docker container {self.container_ref!r} is not running")
-
-            if self.verify_container_image and self.image is not None:
-                image_inspected = await self._run_docker("image", "inspect", "--format", "{{.Id}}", self.image)
-                if image_inspected.exit_code != 0:
-                    detail = image_inspected.stderr.strip() or image_inspected.stdout.strip()
-                    raise RuntimeError(
-                        f"Docker image {self.image!r} is not available locally for verification: {detail}"
-                    )
-                configured_image_id = image_inspected.stdout.strip()
-                if configured_image_id != container_image_id:
-                    raise RuntimeError(
-                        f"Docker container {self.container_ref!r} uses image {container_image_id!r}, "
-                        f"but configured image {self.image!r} resolves to {configured_image_id!r}"
-                    )
-
-            self._container_name = container_id
-            return
-
-        assert self.image is not None
-        if self.pull_policy == "never":
-            inspected = await self._run_docker("image", "inspect", self.image)
-            if inspected.exit_code != 0:
-                detail = inspected.stderr.strip() or inspected.stdout.strip()
-                raise RuntimeError(f"Docker image {self.image!r} is not available locally: {detail}")
-
-        # A separate `docker pull` to time-bound the pull on its own
-        pull_policy = self.pull_policy
-        if self.pull_timeout is not None and pull_policy != "never":
-            if pull_policy == "always" or not await self._has_image():
-                await self._pull_image()
-            pull_policy = "never"
+        images = dict.fromkeys([self.image, *(mount.image for mount in self.image_mounts)])
+        for image in images:
+            await self._prepare_image(image)
 
         name = self.container_name or f"uni-agent-{uuid.uuid4().hex[:12]}"
-        args = self._build_run_args(name, pull_policy=pull_policy, include_pull=True)
-        started = await self._run_start_command(name, args)
-        if started.exit_code != 0 and self._is_legacy_pull_error(started):
-            # Docker added `docker run --pull` in 20.10. Older daemons/CLIs
-            # reject the flag before creating a container. Fall back to the
-            # legacy command shape: `missing` is the old default behavior,
-            # `never` was already checked (or explicitly pulled) above, and
-            # `always` is preserved by pulling explicitly first.
-            logger.info(
-                "Docker does not support --pull; retrying sandbox %s with legacy run syntax",
-                name,
+        args = ["run", "--rm", "-d", "--name", name, "--pull", "never", "--entrypoint", "sleep"]
+        for mount in self.image_mounts:
+            args.extend(
+                [
+                    "--mount",
+                    f"type=image,source={mount.image},destination={mount.mount_path}",
+                ]
             )
-            if pull_policy == "always":
-                await self._pull_image()
-            args = self._build_run_args(name, pull_policy=pull_policy, include_pull=False)
-            started = await self._run_start_command(name, args)
+        args.extend(self.run_args)
+        args.append(self.image)
+        args.append(str(math.ceil(self.runtime_timeout)))
+
+        try:
+            started = await self._run_docker(*args, timeout=self.start_timeout)
+        except asyncio.TimeoutError as exc:
+            # The timed-out `docker run` may still have created the container; drop it so a
+            # retry with the same container_name does not collide.
+            await self._run_docker("rm", "-f", name, timeout=30.0)
+            raise TimeoutError(
+                f"Starting Docker sandbox from {self.image!r} exceeded start_timeout={self.start_timeout:g}s"
+            ) from exc
         if started.exit_code != 0:
             detail = started.stderr.strip() or started.stdout.strip()
             raise RuntimeError(f"Failed to start Docker sandbox from {self.image!r}: {detail}")
         self._container_name = name
+        await self._setup_executable_paths(self.executable_paths)
 
     async def _run_start_command(self, name: str, args: list[str]) -> ExecResult:
         """Run ``docker run`` and clean up if the command times out mid-create."""

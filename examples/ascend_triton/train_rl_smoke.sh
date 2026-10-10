@@ -12,6 +12,51 @@ cd "${repo_root}"
 : "${NNODES:?Set NNODES to the training node count}"
 : "${NGPUS_PER_NODE:?Set NGPUS_PER_NODE to the Ascend NPU count per node}"
 
+# Match verl's Huawei platform detection and Ray device-binding mode before
+# checking or starting the local cluster.
+export DEVICE=${DEVICE:-npu}
+export VERL_PLATFORM=${VERL_PLATFORM:-huawei}
+export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=${RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES:-1}
+unset LOCAL_RANK
+
+if [[ -z "${ASCEND_RT_VISIBLE_DEVICES:-}" ]]; then
+    visible_npus=""
+    for ((npu_index = 0; npu_index < NGPUS_PER_NODE; npu_index++)); do
+        visible_npus+="${visible_npus:+,}${npu_index}"
+    done
+    export ASCEND_RT_VISIBLE_DEVICES="${visible_npus}"
+fi
+
+# The single-node smoke can create its own Ray head. A multi-node run must use
+# the cluster started by the user's NPU launcher on every node.
+RAY_GCS_ADDRESS=${RAY_GCS_ADDRESS:-127.0.0.1:6379}
+if ! ray status --address="${RAY_GCS_ADDRESS}" >/dev/null 2>&1; then
+    if [[ "${NNODES}" != 1 ]]; then
+        echo "No Ray cluster at ${RAY_GCS_ADDRESS}; start the multi-node Ray cluster on all ${NNODES} nodes first." >&2
+        exit 1
+    fi
+    ray start --head \
+        --port=6379 \
+        --dashboard-host=0.0.0.0 \
+        --resources="{\"NPU\": ${NGPUS_PER_NODE}}" \
+        --disable-usage-stats
+elif ! ray status --address="${RAY_GCS_ADDRESS}" 2>/dev/null | grep -q "NPU"; then
+    echo "Ray cluster at ${RAY_GCS_ADDRESS} has no NPU resource; start it with the NPU resource enabled." >&2
+    exit 1
+fi
+
+python3 -c '
+import torch
+import torch_npu  # noqa: F401
+from verl.plugin.platform import get_platform
+
+platform = get_platform()
+print(f"verl platform: {platform.__class__.__name__}, device={platform.device_name}, ray_resource={platform.ray_resource_name()}")
+assert platform.device_name == "npu", platform.device_name
+assert platform.ray_resource_name() == "NPU", platform.ray_resource_name()
+assert torch.npu.is_available(), "torch.npu.is_available() is false"
+'
+
 RAY_DATA_HOME=${RAY_DATA_HOME:-"${HOME}/verl"}
 RUNTIME_ENV=${RUNTIME_ENV:-"examples/quickstart/training/runtime_env_npu_smoke.yaml"}
 SMOKE_DIR=${SMOKE_DIR:-"${RAY_DATA_HOME}/data/uni_agent/ascend_triton_rl_smoke"}
