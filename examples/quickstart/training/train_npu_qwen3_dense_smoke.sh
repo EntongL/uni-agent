@@ -145,6 +145,22 @@ if [[ ! -f "${TEST_FILE}" ]]; then
         --rows "${SMOKE_TEST_ROWS}"
 fi
 
+# Qwen3.5 GatedDeltaNet does not auto-select NPU kernels. fla_npu is optional;
+# without it the vendored Triton backends are the ones VeOmni documents for NPU.
+qwen35_ops=()
+if [[ -f "${MODEL_PATH}/config.json" ]] && python3 -c '
+import json, sys
+model_type = json.load(open(sys.argv[1])).get("model_type", "")
+sys.exit(0 if str(model_type).startswith("qwen3_5") else 1)
+' "${MODEL_PATH}/config.json"; then
+    qwen35_ops=(
+        "actor_rollout_ref.actor.veomni.rms_norm_gated_implementation=${RMS_NORM_GATED_IMPL:-npu}"
+        "actor_rollout_ref.actor.veomni.causal_conv1d_implementation=${CAUSAL_CONV1D_IMPL:-npu}"
+        "actor_rollout_ref.actor.veomni.chunk_gated_delta_rule_implementation=${CHUNK_GATED_DELTA_IMPL:-npu}"
+    )
+    echo "Qwen3.5 GatedDeltaNet kernels: ${qwen35_ops[*]}"
+fi
+
 if [[ "${START_RAY}" == "True" ]]; then
     if ! ray status --address="${RAY_GCS_ADDRESS}" >/dev/null 2>&1; then
         total_npus=$((NNODES * NGPUS_PER_NODE))
@@ -223,6 +239,7 @@ ray job submit --address "${RAY_ADDRESS}" --no-wait --runtime-env "${RUNTIME_ENV
     actor_rollout_ref.actor.veomni.rms_norm_implementation=npu \
     actor_rollout_ref.actor.veomni.rotary_pos_emb_implementation=npu \
     actor_rollout_ref.actor.veomni.swiglu_mlp_implementation=eager \
+    "${qwen35_ops[@]}" \
     actor_rollout_ref.actor.entropy_coeff=0 \
     actor_rollout_ref.actor.loss_agg_mode=token-mean \
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=${infer_ppo_max_token_len} \

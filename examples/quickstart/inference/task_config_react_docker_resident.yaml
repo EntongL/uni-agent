@@ -1,0 +1,46 @@
+- name: swe_bench
+  sandbox:
+    provider: docker
+    runtime_timeout: 1200
+    sandbox_kwargs:
+      container_ref: uni-agent-resident
+      verify_container_image: false
+
+  eval_timeout: 120
+
+  agent:
+    name: react
+    max_steps: 5
+    timeout_budget: 1
+
+    tools:
+      - name: str_replace_editor
+
+      - name: stateful_shell
+        command_timeout: 30
+        env_vars:
+          PIP_PROGRESS_BAR: "off"
+          PAGER: "cat"
+          TQDM_DISABLE: "1"
+          GIT_PAGER: "cat"
+
+      - name: submit
+
+    model:
+      temperature: 0.8
+      top_p: 0.9
+      max_total_tokens: 4096
+
+  prompt_template:
+    - role: system
+      content: |
+        You are a helpful coding agent working in /testbed.
+
+    - role: user
+      content: |-
+        Solve the following coding task in /testbed:
+
+        {problem_statement}
+
+        Inspect the repository and make the minimal correct change.
+        Run a small verification if possible, then call submit.

@@ -30,17 +30,18 @@ def test_score_kernelgym_result_requires_completed_correct_non_decoy_kernel():
 @pytest.mark.cpu
 @pytest.mark.level0
 @pytest.mark.parametrize(
-    "payload",
+    ("payload", "reward"),
     [
-        {"status": "completed", "compiled": False, "correctness": False},
-        {"status": "failed", "compiled": True, "correctness": True},
-        {"status": "completed", "compiled": True, "correctness": True, "decoy_kernel": True},
+        ({"status": "completed", "compiled": True, "correctness": False}, 0.3),
+        ({"status": "completed", "compiled": False, "correctness": False}, 0.1),
+        ({"status": "failed", "compiled": True, "correctness": True}, 0.0),
+        ({"status": "completed", "compiled": True, "correctness": True, "decoy_kernel": True}, 0.0),
     ],
 )
-def test_score_kernelgym_result_rejects_invalid_candidate_outcomes(payload):
+def test_score_kernelgym_result_stages_partial_credit(payload, reward):
     result = score_kernelgym_result(payload)
 
-    assert result["reward"] == 0.0
+    assert result["reward"] == reward
     assert result["accuracy"] == 0.0
     assert result["resolved"] is False
 

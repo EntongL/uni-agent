@@ -20,11 +20,12 @@ def _optional_number(value: object, *, field: str) -> float | None:
 
 
 def score_kernelgym_result(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Return the first-stage correctness reward and compact evaluator diagnostics.
+    """Return a staged KernelGYM reward and compact evaluator diagnostics.
 
-    Kernel performance is deliberately reported but not optimized in the first
-    smoke recipe. This makes a bad evaluator integration visible before a noisy
-    timing signal is allowed to affect policy updates.
+    A fully correct, non-decoy kernel scores 1. A completed evaluation that
+    compiled but is not correct scores 0.3. A completed evaluation that did not
+    compile scores 0.1. Decoys and evaluations that did not complete stay at 0.
+    Accuracy stays binary. Performance is reported and does not change the reward.
     """
     status = payload.get("status")
     if not isinstance(status, str) or not status.strip():
@@ -35,6 +36,14 @@ def score_kernelgym_result(payload: Mapping[str, Any]) -> dict[str, Any]:
     decoy_kernel = bool(payload.get("decoy_kernel", False))
     completed = status.lower() == "completed"
     correct = completed and compiled and correctness and not decoy_kernel
+    if correct:
+        reward = 1.0
+    elif completed and compiled and not decoy_kernel:
+        reward = 0.3
+    elif completed and not decoy_kernel:
+        reward = 0.1
+    else:
+        reward = 0.0
 
     metadata = payload.get("metadata")
     case_summary = metadata.get("case_summary") if isinstance(metadata, Mapping) else None
@@ -46,7 +55,7 @@ def score_kernelgym_result(payload: Mapping[str, Any]) -> dict[str, Any]:
         error_message = str(error_message)
 
     return {
-        "reward": float(correct),
+        "reward": reward,
         "accuracy": float(correct),
         "resolved": correct,
         "eval_completed": completed,

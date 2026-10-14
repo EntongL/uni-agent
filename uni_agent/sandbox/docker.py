@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import uuid
 from pathlib import Path, PurePosixPath
@@ -128,8 +129,37 @@ class DockerSandbox(Sandbox):
             raise RuntimeError(f"Docker image {image!r} is not available locally")
         await self._pull_image(image)
 
+    async def _attach_existing(self) -> None:
+        """Use a container that is already running instead of creating one."""
+        ref = self.container_ref
+        if not ref:
+            raise RuntimeError("container_ref is required to attach to an existing container")
+        inspected = await self._run_docker(
+            "inspect",
+            "--format",
+            "{{.Id}} {{.Config.Image}} {{.State.Running}}",
+            ref,
+            timeout=30.0,
+        )
+        if inspected.exit_code != 0:
+            detail = inspected.stderr.strip() or inspected.stdout.strip()
+            raise RuntimeError(f"Failed to attach to Docker container {ref!r}: {detail}")
+        parts = inspected.stdout.strip().split(maxsplit=2)
+        if len(parts) != 3 or parts[2] != "true":
+            raise RuntimeError(f"Docker container {ref!r} is not running")
+        container_id, image, _running = parts
+        if self.verify_container_image and image != self.image:
+            raise RuntimeError(
+                f"Docker container {ref!r} image {image!r} does not match configured image {self.image!r}"
+            )
+        self._container_name = container_id
+        await self._setup_executable_paths(self.executable_paths)
+
     async def start(self) -> None:
         if self._container_name is not None:
+            return
+        if self.container_ref is not None:
+            await self._attach_existing()
             return
 
         images = dict.fromkeys([self.image, *(mount.image for mount in self.image_mounts)])

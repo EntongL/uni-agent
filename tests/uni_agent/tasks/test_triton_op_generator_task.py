@@ -206,32 +206,48 @@ def test_all_agent_stages_keep_reference_and_candidate_entry_points_separate(sta
         "kernel_path": "/tmp/episode/output/kernel_code.py",
         "evaluator_path": "/tmp/episode/kernelgym_final_client.py",
     }
+    instructions = "/tmp/episode/INSTRUCTIONS.md"
     if stage == "initial":
         prompt = TritonOpGeneratorTask._messages_with_runtime_paths(
-            cfg.prompt, cfg=cfg, reference_path=paths["reference_path"],
-            output_dir="/tmp/episode/output", evaluator_path=paths["evaluator_path"],
+            cfg.prompt, reference_path=paths["reference_path"],
+            output_dir="/tmp/episode/output", instructions_path=instructions,
         )[0]["content"]
     elif stage == "missing":
-        prompt = TritonOpGeneratorTask._missing_kernel_prompt(cfg, **paths)
+        prompt = TritonOpGeneratorTask._missing_kernel_prompt(
+            instructions, paths["reference_path"], paths["kernel_path"],
+        )
     elif stage == "context":
-        prompt = TritonOpGeneratorTask._context_thrash_prompt(cfg, **paths)
+        prompt = TritonOpGeneratorTask._context_thrash_prompt(
+            instructions, paths["reference_path"], paths["kernel_path"],
+        )
     else:
         prompt = TritonOpGeneratorTask._evaluation_repair_prompt(
-            cfg=cfg, **paths,
+            cfg=cfg, reference_path=paths["reference_path"], kernel_path=paths["kernel_path"],
+            instructions_path=instructions,
             result={
                 "status": "failed", "compiled": False, "correctness": False,
                 "error_code": "VALIDATION_ERROR",
                 "error_message": "Kernel code validation failed: Code must contain a 'ModelNew' class",
             },
         )
+    workflow = TritonOpGeneratorTask._workflow_instructions(cfg, **paths)
     assert "ModelNew" in prompt
-    assert "--entry-point Model --backend" in prompt
+    assert instructions in prompt
     assert "--entry-point ModelNew" not in prompt
-    assert "not the candidate" in prompt or "not ModelNew" in prompt
-    assert "torch.nn.Module subclass" in prompt
-    assert "super().__init__()" in prompt
-    assert "Pass torch.Tensor objects directly" in prompt
-    assert "Do not shadow npu" in prompt
+    assert "--entry-point ModelNew" not in workflow
+    assert "--entry-point Model --backend" in workflow
+    assert "not the candidate" in workflow or "not ModelNew" in prompt or "not ModelNew" in workflow
+    assert "torch.nn.Module subclass" in workflow
+    assert "super().__init__()" in workflow
+    assert "Pass torch.Tensor objects directly" in workflow
+    assert "Do not shadow npu" in workflow
+    assert "Do not wrap the grid size in min()" in workflow
+    assert TritonOpGeneratorTask._seed_kernel_rejected("import triton.module\n")
+    assert TritonOpGeneratorTask._seed_kernel_rejected("def __call__(self):\n    return A * s\n")
+    assert TritonOpGeneratorTask._seed_kernel_rejected("@triton.jit\ndef kernel():\n    pass\n")
+    assert not TritonOpGeneratorTask._seed_kernel_rejected(
+        "@triton.jit\ndef kernel():\n    pass\nclass ModelNew:\n    def forward(self, A, s):\n        grid = (256,)\n"
+    )
 
 
 @pytest.mark.cpu
@@ -240,7 +256,7 @@ def test_repair_prompt_retains_failed_npu_call_and_decoy_status():
     prompt = TritonOpGeneratorTask._evaluation_repair_prompt(
         cfg=_config(), reference_path="/tmp/episode/reference.py",
         kernel_path="/tmp/episode/output/kernel_code.py",
-        evaluator_path="/tmp/episode/kernelgym_final_client.py",
+        instructions_path="/tmp/episode/INSTRUCTIONS.md",
         result={
             "status": "completed", "compiled": True, "correctness": False,
             "decoy_kernel": True, "error_code": "RUNTIME_ERROR",
@@ -254,4 +270,9 @@ def test_repair_prompt_retains_failed_npu_call_and_decoy_status():
     )
     assert "new_model_instance.npu(device=device)" in prompt
     assert "decoy_kernel=True" in prompt
-    assert "self.npu = None" in prompt
+    assert "self.npu = None" in TritonOpGeneratorTask._workflow_instructions(
+        _config(),
+        reference_path="/tmp/episode/reference.py",
+        kernel_path="/tmp/episode/output/kernel_code.py",
+        evaluator_path="/tmp/episode/kernelgym_final_client.py",
+    )
