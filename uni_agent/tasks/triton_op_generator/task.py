@@ -623,8 +623,8 @@ class TritonOpGeneratorTask(Task):
             "with an invalid coreDim.\n"
             "A pure PyTorch body such as `return A * s`, or a ModelNew that defines "
             "__call__, is a decoy and scores 0. Import triton and triton.language as tl. "
-            "Do not import triton.module. The user prompt already contains the kernel to write. "
-            "Do not read this file again.\n"
+            "Do not import triton.module. Generate ModelNew from the reference; do not "
+            "copy a kernel from the user prompt or from another episode.\n"
             f"Try at most {cfg.agent_verification_attempts} candidates. "
             "After each write, run:\n"
             f"{command}\n"
@@ -654,8 +654,9 @@ class TritonOpGeneratorTask(Task):
             )
         else:
             follow_up = (
-                "Write class ModelNew to OUTPUT_DIR/kernel_code.py with the Write tool, "
-                "then stop. Do not read skills or other files."
+                "Read INSTRUCTIONS_PATH and REFERENCE_PATH, then write a new ModelNew "
+                "to OUTPUT_DIR/kernel_code.py for this episode. Do not reuse another "
+                "episode's file. Run the KernelGYM command in INSTRUCTIONS.md."
             )
         user_message["content"] = (
             f"{content.rstrip()}\n\n"

@@ -7,6 +7,8 @@
     runtime_timeout: 7200
     sandbox_kwargs:
       container_ref: uni-agent-resident
+      # Training node has no local docker daemon; wrapper SSHes to atlas-41.
+      docker_binary: /home/naie/.local/bin/docker
       # The dataset's canonical image name need not be a local Docker tag for
       # this externally managed resident container.
       verify_container_image: false
@@ -17,7 +19,7 @@
         ssh_host: 10.1.30.41
         ssh_user: root
         remote_port: 0
-        identity_file: ~/.ssh/id_ed25519_uni_agent
+        identity_file: ~/.ssh/id_ed25519
         known_hosts_file: ~/.ssh/known_hosts
 
   agent_workdir: /mnt/model/lientong/AscendKernelBench/agent
@@ -41,7 +43,9 @@
   # the 24064-token Gateway limit before kernel_code.py is scored.
   missing_kernel_retries: 0
   context_recovery_retries: 0
-  evaluation_retries: 0
+  # One repair after a completed, non-zero-feedback KernelGYM rejection so a
+  # first-pass PyTorch decoy can be rewritten as a real Triton kernel.
+  evaluation_retries: 1
   # The Claude session itself generates, evaluates with KernelGYM, and repairs
   # up to this many candidates before the independent final reward call.
   agent_verification_attempts: 3
@@ -68,14 +72,13 @@
     extra_args:
       - --debug-file
       - /tmp/uni-agent-claude-debug.log
-      # The default Claude system prompt plus every built-in tool is about 19k
-      # Qwen tokens, which leaves too little of the 24064 trajectory. Keep only
-      # Write and Bash, and replace the system prompt.
+      # Keep Read/Write/Bash. Skill is omitted: its body refills the 24064
+      # trajectory. Claude must generate ModelNew from the episode reference.
       - --tools
-      - Write,Bash
+      - Read,Write,Bash
       - --system-prompt
-      - Use the Write tool to save the requested file, then stop. Do not read files.
-    max_turns: 4
+      - Read the episode instructions and reference, write a new ModelNew to kernel_code.py, evaluate with KernelGYM, then stop. Do not load .claude/skills.
+    max_turns: 12
     run_timeout: 3600
     extra_env:
       KERNELGYM_SERVER_URL: http://10.1.30.41:19001
@@ -103,26 +106,20 @@
   prompt_template:
     - role: user
       content: |-
-        Write OUTPUT_DIR/kernel_code.py with one Write call, then stop. Do not read any file.
-        Do not import triton.module. Do not define __call__. grid = (256,) with no min().
+        Generate a new Ascend Triton candidate for this episode. Each rollout must
+        write its own ModelNew. Do not paste a finished kernel from memory.
 
-        ```python
-        import torch
-        import torch.nn as nn
-        import triton
-        import triton.language as tl
+        Read INSTRUCTIONS_PATH once, then REFERENCE_PATH. Write OUTPUT_DIR/kernel_code.py.
+        Pure PyTorch such as `return A * s` is a decoy and scores 0. You must use a
+        real `@triton.jit` kernel with `tl.load` / `tl.store`.
 
+        Required shape only (fill the compute yourself; do not copy a finished body):
+        import torch, torch.nn as nn, triton, triton.language as tl
         @triton.jit
         def kernel(in_ptr, out_ptr, scalar, n_elements, BLOCK_SIZE: tl.constexpr):
             pid = tl.program_id(0)
             nprog = tl.num_programs(0)
-            blocks = tl.cdiv(n_elements, BLOCK_SIZE)
-            for block_id in range(pid, blocks, nprog):
-                offsets = block_id * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-                mask = offsets < n_elements
-                vals = tl.load(in_ptr + offsets, mask=mask, other=0.0)
-                tl.store(out_ptr + offsets, vals * scalar, mask=mask)
-
+            # loop tiles with load/store; implement A * s here
         class ModelNew(nn.Module):
             def forward(self, A, s):
                 source = A.contiguous()
@@ -130,4 +127,7 @@
                 grid = (256,)
                 kernel[grid](source, output, s, source.numel(), BLOCK_SIZE=4096)
                 return output
-        ```
+
+        Do not import triton.module. Do not define __call__. No min() around the grid.
+        After writing, run the KernelGYM command in INSTRUCTIONS.md and repair from the
+        short JSON summary if decoy_kernel is true. Do not read .claude/skills.
