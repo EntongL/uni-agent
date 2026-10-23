@@ -1,5 +1,8 @@
 # Ascend Triton single-sample Gateway smoke
 
+**New to this machine / handing off?** Start with the end-to-end runbook:
+[`ONBOARDING.md`](./ONBOARDING.md) (env → data → sandbox → Megatron smoke → 3-step 4B).
+
 This recipe runs one `triton_op_generator` row from AscendKernelBench through
 the same Uni-Agent Gateway path used by RL: the rollout engine creates a
 session, Claude Code uses its Anthropic Messages endpoint for a
