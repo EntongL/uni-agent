@@ -15,18 +15,18 @@
 ┌─────────────────────────────────┐              ┌──────────────────────────────────┐
 │ venv + Ray + Megatron + vLLM    │   SSH Docker │ Docker: uni-agent-resident        │
 │ Gateway 开 session              │ ───────────► │ Claude Code + Ascend Triton       │
-│ 写 trajectory / 算 GRPO        │              │ episode 目录 + KernelGYM 调评      │
+│ 写 trajectory / 算 GRPO        │              │ episode 目录 + agent skill 评测    │
 │                                 │ ◄─ reverse ─ │ Claude 经 127.0.0.1:<port> 回调   │
 └─────────────────────────────────┘   tunnel     └──────────────────────────────────┘
                                                         │
                                                         ▼
-                                                 KernelGYM :19001
+                                                 agent/.claude/skills/verifier
 ```
 
 要点：
 
 - **训练与 Rollout 跑在本机 Ray head**，不要进 `uni-agent-resident` 里起训练。
-- **Resident 容器**只负责 Claude Code + KernelGYM 评测；通过本机 `/home/naie/.local/bin/docker`（SSH 到 `root@10.1.30.41`）attach。
+- **Resident 容器**只负责 Claude Code + AscendKernelBench agent skill 评测；通过本机 `/home/naie/.local/bin/docker`（SSH 到 `root@10.1.30.41`）attach。
 - 任务类型：`triton_op_generator`。参考类名 `Model`，候选必须是 `ModelNew`。
 - 当前 recipe 使用 **常驻容器**（`container_ref: uni-agent-resident`），不是每次新建 ephemeral 容器。
 
@@ -139,9 +139,10 @@ export RAY_ADDRESS=http://127.0.0.1:8265
 # 期望看到：uni-agent-resident ... Up ...
 
 /home/naie/.local/bin/docker exec uni-agent-resident sh -lc \
-  'test -d /mnt/model/lientong/AscendKernelBench/agent && which claude && \
-   curl -s -o /dev/null -w "%{http_code}\n" http://10.1.30.41:19001/'
-# 期望：目录存在、claude 在 PATH、KernelGYM HTTP 200
+  'ls /mnt/model/lientong/AscendKernelBench/agent/.claude/skills && \
+   test -f /mnt/model/lientong/AscendKernelBench/agent/.claude/skills/triton-op-verifier/scripts/verify.py && \
+   which claude'
+# 期望：skills 列表、verify.py 存在、claude 在 PATH。若 skill 目录名不同，改 yaml 的 verifier_skill。
 ```
 
 Resident 容器内需要具备：
@@ -224,8 +225,9 @@ python3 examples/quickstart/training/make_npu_smoke_data.py \
 4. 在容器内建 episode 目录，例如：  
    `/tmp/uni-agent-triton-episodes/<label>-<uuid>/`  
    含 `reference.py`、`INSTRUCTIONS.md`、`output/kernel_code.py`、`final-eval/`
-5. Claude Code（`permission_mode: dontAsk`，工具仅 Read/Write/Bash）写 `ModelNew`，可调 KernelGYM
-6. Task **独立**再跑一次 KernelGYM 打分 → reward（常见：`1.0` / `0.3` / `0.1` / `0.0`）
+5. Claude Code 的 workdir 是 `AscendKernelBench/agent`，直接吃该目录的 CLAUDE.md / AGENTS.md 和全部 skill。
+6. Agent 按那份 markdown 的全流程写 kernel、用 verifier skill 修编译/精度、再用 optimizer skill 刷加速比。
+7. Task **独立**再跑一遍 verifier skill 的 `verify.py` / `benchmark.py` 打分。正确 0.7，加速比最多再加 0.3；只编过 0.3；没编过 0.1。
 
 ### 4.2 Task 配置（本机实际值）
 
@@ -240,7 +242,8 @@ python3 examples/quickstart/training/make_npu_smoke_data.py \
 | `ssh_reverse_tunnel.ssh_host` | `10.1.30.41` |
 | `agent_workdir` | `/mnt/model/lientong/AscendKernelBench/agent` |
 | `episode_root` | `/tmp/uni-agent-triton-episodes` |
-| `kernelgym_url` | `http://10.1.30.41:19001` |
+| `use_agent_skills` | `true`（Claude 在 `agent` 目录跑完整 markdown 流程） |
+| `verifier_skill` | `triton-op-verifier`（`scripts/verify.py` + `scripts/benchmark.py` 出分） |
 | `entry_point` | `Model`（参考类；候选永远是 `ModelNew`） |
 | `CONCURRENCY` | **必须为 1**（常驻容器共享可变文件系统） |
 
@@ -422,7 +425,8 @@ grep -R "run_task done" \
 5. **`entry_point` 改成 `ModelNew`** → 参考校验失败；必须保持 `Model`。
 6. **纯 PyTorch decoy**（`return A * s`）→ reward 0；必须有 `@triton.jit` + `tl.load`/`tl.store`。
 7. **`SERVED_MODEL_NAME=glm-5.2` 与 parser 不匹配** → tool call 解析失败；parser 跟**真实 checkpoint** 模板走（当前 Qwen3.5 用 `qwen3_xml`）。
-8. **Claude YAML context 与训练 `prompt+response` 不对齐** → Autocompact thrash / `Prompt is too long`。训练侧实际预算是 Hydra 的长度和，不是只改 YAML 就能放大。
+8. **Claude YAML context 与训练 `prompt+response` 不对齐** → Autocompact thrash / `Prompt is too long`。训练侧实际预算是 Hydra 的长度和，不是只改 YAML 就能放大。打开 skill 后 Read 会更大，若 thrash 先把 `prompt_length + response_length` 和 `CLAUDE_CODE_MAX_CONTEXT_TOKENS` 一起加大，或把 `use_agent_skills` 设回 `false`。
+8b. **verifier 脚本路径和 yaml 不一致** → 最终打分找不到 `verify.py`。以 resident 里 `ls agent/.claude/skills/<verifier_skill>/scripts` 为准，改 `verifier_skill` 或显式设 `verify_script` / `benchmark_script`。
 9. **Ray `runtime_env` 里加 `pip:`** → NPU 环境会被克隆到 `/tmp`，易把盘打满；本机 yaml **故意无 pip**，包装在 base venv。
 10. **4B 不切 TP/PP 硬跑** → actor update OOM。
 11. **KernelGYM 超时 / NPU fatal** → 该 episode reward 0，但训练 step 仍可能完成；查 `task.log` 与 `final-eval`。
@@ -461,7 +465,7 @@ bash examples/ascend_triton/train_megatron_4b_multistep.sh
 | `docs/source/quickstart/launch-sandbox.md` | Docker attach 模式 |
 | `docs/source/quickstart/npu-training.md` | 通用 NPU / `RAY_DATA_HOME`（偏 VeOmni，路径可对照） |
 | `/home/naie/work/README.md` | 平台路径、上传配额、`tmp_no_sync` |
-| `examples/claude_code_kernel_task/` | **另一条** ephemeral verifier 镜像流程，勿与本 resident+KernelGYM 混淆 |
+| `examples/claude_code_kernel_task/` | 同类 skill 工作流，但是 **ephemeral 容器 + verify_once.sh**。本 recipe 是常驻 Docker + AscendKernelBench agent markdown / verifier skill |
 
 ---
 

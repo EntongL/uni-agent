@@ -27,80 +27,56 @@
   kernelgym_url: http://10.1.30.41:19001
   kernelgym_toolkit: sandbox_v3
   kernelgym_backend: triton
-  # KernelGYM uses this for the reference; the candidate class is ModelNew.
+  # Reference class in operator_src; the candidate must still be ModelNew.
   entry_point: Model
-  correctness_trials: 3
-  performance_trials: 10
   evaluation_timeout: 900
-  evaluation_poll_interval: 2
   cleanup_episode: true
-  # During a smoke run, keep kernel_code.py and final-eval/result.json when
-  # the reward is zero so the evaluator failure can be inspected.
   retain_failed_episode: true
-  # A clean CLI exit without output/kernel_code.py is not task completion.
-  # Resume the same Claude conversation once with an artifact-focused prompt.
-  # One short session. A second session rereads the trajectory and hits
-  # the 24064-token Gateway limit before kernel_code.py is scored.
   missing_kernel_retries: 0
   context_recovery_retries: 0
-  # One repair after a completed, non-zero-feedback KernelGYM rejection so a
-  # first-pass PyTorch decoy can be rewritten as a real Triton kernel.
   evaluation_retries: 1
-  # The Claude session itself generates, evaluates with KernelGYM, and repairs
-  # up to this many candidates before the independent final reward call.
   agent_verification_attempts: 3
   seed_reference_kernel: false
+  # Run Claude from the AscendKernelBench agent checkout and follow its
+  # CLAUDE.md / AGENTS.md end to end. Reward comes from that verifier skill.
+  use_agent_skills: true
+  skills_dir: /mnt/model/lientong/AscendKernelBench/agent/.claude/skills
+  coding_skill: triton-op-coding
+  verifier_skill: triton-op-verifier
+  optimizer_skill: triton-latency-optimizer
+  target_speedup: 2.0
+  benchmark_warmup: 5
+  benchmark_repeats: 10
 
   agent:
     name: claude_code
-    # AscendKernelBench's triton-ascend-kernelgen workflow is implemented as
-    # Claude Code skills, so this must remain false.
-    disable_slash_commands: true
-    enable_subagents: false
-    # The resident container defaults to root. Claude Code blocks its broad
-    # bypassPermissions mode as root, so pre-approve this workflow's tool set
-    # and reject any other tool without an interactive prompt.
+    # The agent markdown may invoke slash skills and subagents. Keep both on.
+    disable_slash_commands: false
+    enable_subagents: true
     permission_mode: dontAsk
     allowed_tools:
       - Bash
       - Read
       - Write
-      # Skill is omitted. Its body refills the 24064-token trajectory.
-    # Temporary Gateway smoke diagnostics. Remove or disable these for large
-    # RL runs after the model/parser combination is verified.
+      - Edit
+      - Skill
+      - Agent
+      - Task
     verbose: true
     extra_args:
       - --debug-file
       - /tmp/uni-agent-claude-debug.log
-      # Keep Read/Write/Bash. Skill is omitted: its body refills the 24064
-      # trajectory. Claude must generate ModelNew from the episode reference.
       - --tools
-      - Read,Write,Bash
+      - Read,Write,Edit,Bash,Skill,Agent,Task
       - --system-prompt
-      - Read the episode instructions and reference, write a new ModelNew to kernel_code.py, evaluate with KernelGYM, then stop. Do not load .claude/skills.
-    max_turns: 12
+      - Follow CLAUDE.md / AGENTS.md in this directory end to end. Use every Skill that workflow names. Write ModelNew to the episode KERNEL_PATH. The verifier Skill's verify.py and benchmark.py are the training score.
+    max_turns: 80
     run_timeout: 3600
     extra_env:
-      KERNELGYM_SERVER_URL: http://10.1.30.41:19001
-      KERNELGYM_TOOLKIT: sandbox_v3
-      MAX_SMOKE: "2"
-      MAX_TURNS: "32"
-      # Claude's own system prompt and tool schema are the large part of the first
-      # request (~20k Qwen tokens). The task prompt stays short and points at
-      # INSTRUCTIONS.md. Claude's usable window is this value minus
-      # CLAUDE_CODE_MAX_OUTPUT_TOKENS. 23600 - 1024 = 22576, and the Read of
-      # INSTRUCTIONS.md plus reference.py crossed that, so Claude blocked locally
-      # (autocompact level=blocked) before the Gateway's 24064 budget.
-      # 25088 - 1024 = 24064, matching the Gateway trajectory capacity.
-      # Usable input window is MAX_CONTEXT - MAX_OUTPUT. The ~20k first prompt
-      # plus the two small file reads fit in 24064 (r6) and did not fit in
-      # 23040 (r7). Output must stay 2048 or the kernel write is cut off.
-      # 26112 - 2048 = 24064, matching the Gateway trajectory capacity.
+      MAX_TURNS: "80"
       CLAUDE_CODE_MAX_CONTEXT_TOKENS: "26112"
       CLAUDE_CODE_MAX_OUTPUT_TOKENS: "2048"
-      # One skill or reference read must fit in the residual trajectory budget.
-      CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS: "1024"
-      # Retain Claude Code's tools and skills while reducing system/tool-schema tokens.
+      CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS: "4096"
       CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT: "1"
 
   prompt_template:
@@ -109,25 +85,12 @@
         Generate a new Ascend Triton candidate for this episode. Each rollout must
         write its own ModelNew. Do not paste a finished kernel from memory.
 
-        Read INSTRUCTIONS_PATH once, then REFERENCE_PATH. Write OUTPUT_DIR/kernel_code.py.
+        Follow the agent markdown in this workdir (CLAUDE.md / AGENTS.md) through
+        its full workflow: extract/design if it requires that, write the kernel,
+        verify compile and correctness, then optimize speedup. Use every Skill
+        that markdown names. The verifier Skill is the score.
+
+        Write the final ModelNew to OUTPUT_DIR/kernel_code.py from REFERENCE_PATH.
         Pure PyTorch such as `return A * s` is a decoy and scores 0. You must use a
         real `@triton.jit` kernel with `tl.load` / `tl.store`.
-
-        Required shape only (fill the compute yourself; do not copy a finished body):
-        import torch, torch.nn as nn, triton, triton.language as tl
-        @triton.jit
-        def kernel(in_ptr, out_ptr, scalar, n_elements, BLOCK_SIZE: tl.constexpr):
-            pid = tl.program_id(0)
-            nprog = tl.num_programs(0)
-            # loop tiles with load/store; implement A * s here
-        class ModelNew(nn.Module):
-            def forward(self, A, s):
-                source = A.contiguous()
-                output = torch.empty_like(source)
-                grid = (256,)
-                kernel[grid](source, output, s, source.numel(), BLOCK_SIZE=4096)
-                return output
-
         Do not import triton.module. Do not define __call__. No min() around the grid.
-        After writing, run the KernelGYM command in INSTRUCTIONS.md and repair from the
-        short JSON summary if decoy_kernel is true. Do not read .claude/skills.

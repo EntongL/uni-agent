@@ -19,6 +19,74 @@ def _optional_number(value: object, *, field: str) -> float | None:
     return number
 
 
+def score_verifier_result(
+    payload: Mapping[str, Any],
+    *,
+    target_speedup: float = 2.0,
+) -> dict[str, Any]:
+    """Translate verifier-skill verify.py / benchmark.py output into a Task reward.
+
+    Correct kernels start at 0.7. Measured speedup can add up to 0.3, reaching
+    1.0 at ``target_speedup``. A compiled but incorrect candidate scores 0.3.
+    An evaluation that ran but did not compile scores 0.1.
+    """
+    if target_speedup <= 0:
+        raise ValueError("target_speedup must be positive")
+    compile_ok = bool(payload.get("compile_ok") or payload.get("compiled"))
+    passed = int(payload.get("passed_cases") or 0)
+    total = int(payload.get("total_cases") or 0)
+    failed = int(payload.get("failed_cases") or max(total - passed, 0))
+    correctness_ok = bool(payload.get("correctness_ok") or payload.get("correctness"))
+    if total and passed == total and failed == 0:
+        correctness_ok = True
+        compile_ok = True
+    if "eval_completed" in payload:
+        eval_completed = bool(payload.get("eval_completed"))
+    else:
+        status = payload.get("status")
+        eval_completed = not (isinstance(status, str) and status.lower() in {"failed", "timeout", "error"})
+    pass_rate = min(1.0, max(0.0, passed / total)) if total else float(correctness_ok)
+    speedup = _optional_number(payload.get("speedup"), field="speedup")
+
+    if not eval_completed:
+        reward = 0.0
+    elif correctness_ok:
+        reward = 0.7 + 0.3 * min((speedup or 0.0) / target_speedup, 1.0)
+    elif compile_ok:
+        reward = 0.3
+    else:
+        reward = 0.1
+
+    error_message = payload.get("error_message")
+    if error_message is not None and not isinstance(error_message, str):
+        error_message = str(error_message)
+
+    return {
+        "reward": round(reward, 4),
+        "accuracy": float(pass_rate),
+        "resolved": correctness_ok,
+        "eval_completed": eval_completed,
+        "status": "completed" if eval_completed else "failed",
+        "compiled": compile_ok,
+        "correctness": correctness_ok,
+        "compile_ok": compile_ok,
+        "correctness_ok": correctness_ok,
+        "passed_cases": passed,
+        "total_cases": total,
+        "failed_cases": failed,
+        "decoy_kernel": False,
+        "speedup": speedup,
+        "target_speedup": target_speedup,
+        "case_summary": {
+            "passed_cases": passed,
+            "total_cases": total,
+            "failed_cases": failed,
+        },
+        "error_code": payload.get("error_code") or payload.get("verify_exit_code"),
+        "error_message": error_message,
+    }
+
+
 def score_kernelgym_result(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Return a staged KernelGYM reward and compact evaluator diagnostics.
 

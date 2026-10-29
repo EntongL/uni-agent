@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from uni_agent.tasks.triton_op_generator.reward import score_kernelgym_result
+from uni_agent.tasks.triton_op_generator.reward import score_kernelgym_result, score_verifier_result
 
 
 @pytest.mark.cpu
@@ -51,3 +51,40 @@ def test_score_kernelgym_result_stages_partial_credit(payload, reward):
 def test_score_kernelgym_result_rejects_missing_status():
     with pytest.raises(ValueError, match="status"):
         score_kernelgym_result({"compiled": True, "correctness": True})
+
+
+@pytest.mark.cpu
+@pytest.mark.level0
+def test_score_verifier_result_uses_speedup_after_correctness():
+    perfect = score_verifier_result(
+        {
+            "eval_completed": True,
+            "compile_ok": True,
+            "correctness_ok": True,
+            "passed_cases": 3,
+            "total_cases": 3,
+            "failed_cases": 0,
+            "speedup": 2.0,
+        }
+    )
+    partial = score_verifier_result(
+        {
+            "eval_completed": True,
+            "compile_ok": True,
+            "correctness_ok": True,
+            "passed_cases": 3,
+            "total_cases": 3,
+            "failed_cases": 0,
+            "speedup": 1.0,
+        }
+    )
+    compiled = score_verifier_result(
+        {"eval_completed": True, "compile_ok": True, "passed_cases": 1, "total_cases": 3, "failed_cases": 2}
+    )
+    uncompiled = score_verifier_result({"eval_completed": True, "compile_ok": False})
+
+    assert perfect["reward"] == 1.0
+    assert perfect["resolved"] is True
+    assert partial["reward"] == 0.85
+    assert compiled["reward"] == 0.3
+    assert uncompiled["reward"] == 0.1

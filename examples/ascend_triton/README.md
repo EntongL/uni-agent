@@ -5,10 +5,13 @@
 
 This recipe runs one `triton_op_generator` row from AscendKernelBench through
 the same Uni-Agent Gateway path used by RL: the rollout engine creates a
-session, Claude Code uses its Anthropic Messages endpoint for a
-generate-verify-repair loop, and the task independently scores the final
-`kernel_code.py` with KernelGYM. Finalized trajectories
-carry the generated token IDs, masks, log probabilities, and task reward.
+session, Claude Code runs from the resident `AscendKernelBench/agent`
+checkout and follows that directory's CLAUDE.md / AGENTS.md end to end
+(write kernel, verify, optimize). After Claude exits, the task independently
+runs the verifier skill's `verify.py` / `benchmark.py` on the final
+`kernel_code.py`; that result alone is the training reward. Finalized
+trajectories carry the generated token IDs, masks, log probabilities, and
+task reward.
 
 KernelGYM uses separate class names: the immutable reference defines `Model`,
 and the candidate `kernel_code.py` must define `ModelNew`. The evaluator's
@@ -168,12 +171,15 @@ same Claude conversation once when a clean exit leaves `output/kernel_code.py`
 missing (`missing_kernel_retries: 1`). If the file is still missing, the task
 returns `finished=False` and reward 0. A generated file can also receive
 reward 0 if KernelGYM reports a compile, correctness, or service failure.
-The Claude session receives a task-owned KernelGYM client before it starts.
-It should use the packaged coding skill to generate a candidate, run the client
-with `--summary`, inspect the bounded feedback, edit, and repeat up to
-`agent_verification_attempts`. Full feedback for each attempt is saved under
-`output/agent-eval/`. The task rewrites the client and frozen reference before
-its independent final KernelGYM call, which alone determines the reward.
+Claude Code's workdir is the AscendKernelBench `agent` checkout, so it loads
+that markdown workflow and every skill it names. Episode files
+(`reference.py`, `output/kernel_code.py`) are still isolated under
+`episode_root`. After the session, the task restages those files and calls
+the verifier skill scripts itself. Reward is 0.7 for a fully correct kernel,
+plus up to 0.3 from measured speedup (1.0 at `target_speedup`). Compiled but
+incorrect scores 0.3; completed but not compiled scores 0.1. Set
+`use_agent_skills: false` only if you want the short prompt without the
+agent markdown workflow; scoring still uses the verifier skill.
 With `evaluation_retries: 1`, a completed final evaluation that still rejects
 the candidate sends a short error back to Claude; a healthy session is
 resumed, while a crashed session is replaced with a fresh one. The task then
