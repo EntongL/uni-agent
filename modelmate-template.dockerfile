@@ -1,7 +1,27 @@
 # openEuler 24.03 LTS-SP3 版本。
 # 基础镜像必须包含
 # /usr/local/python3.12.13/bin/python3.12，否则复制过来的 venv 无法启动。
+# CANN / Ascend 运行库由基础镜像提供，不要再把 /usr/local/Ascend 打进本镜像。
 # 若基础镜像是私有镜像，请先按平台文档推送到 ModelMate 镜像仓库。
+#
+# 构建上下文是本文件所在目录 /home/naie/work/docker。
+# 先把当前 venv 以及它在 venv 之外引用的源码树放进上下文，再构建：
+#   bash /home/naie/work/docker/stage_image_context.sh
+#   docker build -f template.dockerfile -t uni-agent-train:YYYYMMDD .
+#
+# 上一版只 COPY 了 venv。venv 里这些包是 editable 安装，import 时读的是下面这些绝对路径，
+# 缺了它们镜像里的 python 无法使用：
+#   /home/work/user-job-dir/app/lib/py/uni-agent
+#   /home/work/user-job-dir/app/lib/py/uni-agent/verl
+#   /home/work/user-job-dir/app/lib/py/third_party/Megatron-LM
+#   /home/work/user-job-dir/app/lib/py/third_party/Megatron-Bridge
+#   /home/work/user-job-dir/app/lib/py/third_party/MegatronAdaptor
+#   /home/work/user-job-dir/app/lib/py/third_party/MindSpeed
+#   /home/work/user-job-dir/app/lib/py/third_party/MindSpeed-Bridge
+#   /home/work/user-job-dir/app/lib/py/third_party/MindSpeed-Ops
+#   /home/work/user-job-dir/app/lib/py/third_party/TransformerEngineNPU
+#   /home/work/user-job-dir/app/lib/py/vllm-ascend-0.23.0-a3
+# 本机 /home/naie/work 是指向 /home/work/user-job-dir/app 的符号链接，镜像里也按同样关系摆放。
 FROM registry.fusionstage.local:20202/naie_2002/cann:9.1.0
 
 # 平台模板中的 source 和 [[ ... ]] 需要 bash。
@@ -33,21 +53,47 @@ COPY common/script_for_build_img /home/
 USER root
 RUN sh /home/pre_execution_by_root.sh
 
-# 构建前需把现有 venv 复制到构建上下文：
-# 目标目录必须不存在，否则重复 cp -a 会产生 venv/venv 的整份副本。
-# cp -a /home/naie/work/lib/py/venv /home/naie/work/docker/venv
-# pre_execution_by_root.sh 已创建 naie 用户，此时可按用户名设置属主。
-COPY --chown=naie:naie venv/ /home/naie/work/lib/py/venv/
+# pre_execution_by_root.sh 已创建 /home/work/user-job-dir/app 和 naie 用户。
+# editable 安装写死的是 /home/work/user-job-dir/app，平台变量写的是 /home/naie/work。
+RUN ln -sfn /home/work/user-job-dir/app /home/naie/work
 
-# 尽早确认该 venv 与所选基础镜像兼容，避免到 Notebook 启动阶段才暴露问题。
+# 构建前由 stage_image_context.sh 把现有环境复制到本目录。
+# 目标目录必须是这次脚本新建的，不要在已有 venv/ 上再 cp -a，否则会得到 venv/venv。
+COPY --chown=naie:naie venv/ /home/work/user-job-dir/app/lib/py/venv/
+COPY --chown=naie:naie third_party/ /home/work/user-job-dir/app/lib/py/third_party/
+COPY --chown=naie:naie uni-agent/ /home/work/user-job-dir/app/lib/py/uni-agent/
+COPY --chown=naie:naie vllm-ascend-0.23.0-a3/ /home/work/user-job-dir/app/lib/py/vllm-ascend-0.23.0-a3/
+
+# 尽早确认该 venv 与所选基础镜像兼容，并确认 editable 源码树在镜像里的绝对路径可用。
 RUN test -x "$VENV_BASE_PYTHON" || { \
       echo "ERROR: base image is missing $VENV_BASE_PYTHON" >&2; \
       exit 1; \
     }; \
     test -x "$USER_PYTHON3_HOME/bin/python" && \
     test -d "$USER_PYTHON_PKG_PATH" && \
+    test -L /home/naie/work && \
     "$USER_PYTHON3_HOME/bin/python" -c \
-      'import sys; assert sys.version_info[:3] == (3, 12, 13), sys.version; print(sys.executable, sys.version)'
+      'import os, sys; \
+assert sys.version_info[:3] == (3, 12, 13), sys.version; \
+req = [ \
+  "/home/work/user-job-dir/app/lib/py/uni-agent/uni_agent", \
+  "/home/work/user-job-dir/app/lib/py/uni-agent/verl/verl", \
+  "/home/work/user-job-dir/app/lib/py/third_party/Megatron-LM/megatron/core", \
+  "/home/work/user-job-dir/app/lib/py/third_party/Megatron-Bridge/src/megatron/bridge", \
+  "/home/work/user-job-dir/app/lib/py/third_party/MegatronAdaptor/megatron_adaptor", \
+  "/home/work/user-job-dir/app/lib/py/third_party/MindSpeed/mindspeed", \
+  "/home/work/user-job-dir/app/lib/py/third_party/MindSpeed-Bridge/mindspeed_bridge", \
+  "/home/work/user-job-dir/app/lib/py/third_party/MindSpeed-Ops/mindspeed_ops", \
+  "/home/work/user-job-dir/app/lib/py/third_party/TransformerEngineNPU/transformer_engine", \
+  "/home/work/user-job-dir/app/lib/py/vllm-ascend-0.23.0-a3/vllm_ascend", \
+]; \
+missing = [p for p in req if not os.path.isdir(p)]; \
+assert not missing, missing; \
+needles = ("lib/py/uni-agent", "lib/py/uni-agent/verl"); \
+absent = [n for n in needles if not any(p.rstrip("/").endswith(n) for p in sys.path)]; \
+assert not absent, (absent, sys.path); \
+print(sys.executable, sys.version); \
+print("editable source trees ok")'
 
 RUN echo "====================The value of USER_PYTHON3_HOME is $USER_PYTHON3_HOME" && \
     if [ ! -e "$USER_PYTHON3_HOME/bin/python" ] && [ -e "$USER_PYTHON3_HOME/bin/python3" ]; then \

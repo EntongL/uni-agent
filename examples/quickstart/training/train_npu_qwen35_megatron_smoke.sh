@@ -27,7 +27,8 @@ unset LOCAL_RANK
 export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
 
 # Make all local Ascend devices visible by default. Override this when running
-# on a subset of cards, for example ASCEND_RT_VISIBLE_DEVICES=0,1,2,3.
+# on a subset of cards. The list does not have to start at 0, for example
+# ASCEND_RT_VISIBLE_DEVICES=2,3.
 if [[ -z "${ASCEND_RT_VISIBLE_DEVICES:-}" ]]; then
     visible_npus=""
     for ((npu_index = 0; npu_index < NGPUS_PER_NODE; npu_index++)); do
