@@ -450,6 +450,26 @@ bash examples/ascend_triton/train_megatron_smoke.sh
 bash examples/ascend_triton/train_megatron_4b_multistep.sh
 ```
 
+多人使用时，默认使用的NPU:0会有人占用，此时需要指定空闲的NPU去训练，先通过npu-smi info确认可用的NPU ID
+```bash
+# 先清空原来ray
+ray stop -f
+
+# 然后重新指定visible的NPU
+# NPU ID看npu-smi info中的Name Phy-ID，Ascend910 0 相当于0， Ascend910 1相当于1， Ascend910 7 相当于7
+# 假设我们要使用Ascend910 2 和Ascend910 3，这两个NPU
+export DEVICE=npu VERL_PLATFORM=huawei
+export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
+unset LOCAL_RANK
+export ASCEND_RT_VISIBLE_DEVICES=2,3
+
+# ray启动时只用NPU: 2，意思是只用2个NPU
+ray start --head   --port=6379   --resources='{"NPU": 2}'   --disable-usage-stats --temp-dir=/home/naie/work/tmp_no_sync/ray_tmp
+
+# 启动smoke训练，该训练默认使用2个NPU
+bash examples/ascend_triton/train_megatron_smoke.sh
+```
+
 ---
 
 ## 10. 相关文档索引
