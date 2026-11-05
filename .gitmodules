@@ -1,3 +1,4 @@
 [submodule "verl"]
 	path = verl
 	url = https://github.com/EntongL/verl.git
+	branch = ascend-logical-device-index
